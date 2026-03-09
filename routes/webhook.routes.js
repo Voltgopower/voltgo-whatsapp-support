@@ -3,7 +3,7 @@ const webhookController = require('../controllers/webhook.controller');
 
 const router = express.Router();
 
-router.get('/webhook', webhookController.verifyWebhook);
-router.post('/webhook', webhookController.receiveWebhook);
+router.get('/', webhookController.verifyWebhook);
+router.post('/', webhookController.receiveWebhook);
 
 module.exports = router;

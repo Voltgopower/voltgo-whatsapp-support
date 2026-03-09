@@ -13,9 +13,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-/*
-Webhook routes
-*/
 app.use('/webhook', webhookRoutes);
 
 module.exports = app;

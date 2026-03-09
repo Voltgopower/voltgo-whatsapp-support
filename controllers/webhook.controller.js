@@ -1,18 +1,15 @@
 const webhookService = require('../services/webhook.service');
 
-async function verifyWebhook(req, res) {
+async function receiveWebhook(req, res) {
   try {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (!mode || !token) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing webhook verification params',
-      });
-    }
-
+    console.log('====== WEBHOOK RECEIVED ======');
+    console.log(JSON.stringify(req.body, null, 2));
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error('receiveWebhook error:', error);
+    return res.sendStatus(500);
+  }
+}
     if (mode === 'subscribe' && token === process.env.WEBHOOK_VERIFY_TOKEN) {
       return res.status(200).send(challenge);
     }
