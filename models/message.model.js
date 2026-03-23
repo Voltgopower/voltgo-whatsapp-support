@@ -61,30 +61,75 @@ async function createMessage({
 }
 
 async function findByConversationId(conversationId) {
+  console.log("🔥 USING NEW SQL WITH MEDIA JOIN");
+
   const sql = `
     SELECT
-      id,
-      conversation_id,
-      customer_id,
-      wa_message_id,
-      whatsapp_message_id,
-      phone,
-      COALESCE(text, content) AS text,
-      content,
-      direction,
-      status,
-      raw_payload,
-      sent_at,
-      created_at,
-      failed_dismissed
-    FROM messages
-    WHERE conversation_id = $1
-    ORDER BY id ASC
+      m.id,
+      m.conversation_id,
+      m.customer_id,
+      m.wa_message_id,
+      m.whatsapp_message_id,
+      m.phone,
+      COALESCE(m.text, m.content) AS text,
+      m.content,
+      m.direction,
+      m.status,
+      m.raw_payload,
+      m.sent_at,
+      m.created_at,
+      m.failed_dismissed,
+
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id', ma.id,
+            'message_id', ma.message_id,
+            'media_type', ma.media_type,
+            'mime_type', ma.mime_type,
+            'original_filename', ma.original_filename,
+            'file_ext', ma.file_ext,
+            'file_size', ma.file_size,
+            'storage_provider', ma.storage_provider,
+            'bucket_name', ma.bucket_name,
+            'object_key', ma.object_key,
+            'public_url', ma.public_url,
+            'status', ma.status,
+            'caption', ma.caption,
+            'created_at', ma.created_at
+          )
+        ) FILTER (WHERE ma.id IS NOT NULL),
+        '[]'::json
+      ) AS media_assets
+
+    FROM messages m
+    LEFT JOIN media_assets ma
+      ON ma.message_id = m.id
+
+    WHERE m.conversation_id = $1
+
+    GROUP BY
+      m.id,
+      m.conversation_id,
+      m.customer_id,
+      m.wa_message_id,
+      m.whatsapp_message_id,
+      m.phone,
+      m.text,
+      m.content,
+      m.direction,
+      m.status,
+      m.raw_payload,
+      m.sent_at,
+      m.created_at,
+      m.failed_dismissed
+
+    ORDER BY m.created_at ASC, m.id ASC
   `;
+
   const { rows } = await db.query(sql, [conversationId]);
   return rows;
 }
-
 async function getMessageById(messageId) {
   const sql = `
     SELECT *

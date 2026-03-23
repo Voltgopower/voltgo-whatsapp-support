@@ -116,8 +116,17 @@ async function listConversations({
     ORDER BY conv.last_message_at DESC NULLS LAST, conv.id DESC
   `;
 
-  console.log("FINAL SQL =", sql);
-  console.log("PARAMS =", params);
+  console.log(
+    JSON.stringify(
+    {
+      tag: "LIST_CONVERSATIONS_SQL",
+      sql,
+      params,
+    },
+    null,
+    2
+  )
+);
 
   const { rows } = await db.query(sql, params);
   return rows;
@@ -162,11 +171,70 @@ async function getConversationById(conversationId) {
 }
 
 async function getMessagesByConversationId(conversationId) {
+  console.log("🔥 USING CORRECT MESSAGE QUERY WITH MEDIA");
+
   const sql = `
-    SELECT *
-    FROM messages
-    WHERE conversation_id = $1
-    ORDER BY id ASC
+    SELECT
+      m.id,
+      m.conversation_id,
+      m.customer_id,
+      m.wa_message_id,
+      m.whatsapp_message_id,
+      m.phone,
+      COALESCE(m.text, m.content) AS text,
+      m.content,
+      m.direction,
+      m.status,
+      m.raw_payload,
+      m.sent_at,
+      m.created_at,
+      m.failed_dismissed,
+
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id', ma.id,
+            'message_id', ma.message_id,
+            'media_type', ma.media_type,
+            'mime_type', ma.mime_type,
+            'original_filename', ma.original_filename,
+            'file_ext', ma.file_ext,
+            'file_size', ma.file_size,
+            'storage_provider', ma.storage_provider,
+            'bucket_name', ma.bucket_name,
+            'object_key', ma.object_key,
+            'public_url', ma.public_url,
+            'status', ma.status,
+            'caption', ma.caption,
+            'created_at', ma.created_at
+          )
+        ) FILTER (WHERE ma.id IS NOT NULL),
+        '[]'::json
+      ) AS media_assets
+
+    FROM messages m
+    LEFT JOIN media_assets ma
+      ON ma.message_id = m.id
+
+    WHERE m.conversation_id = $1
+
+    GROUP BY
+      m.id,
+      m.conversation_id,
+      m.customer_id,
+      m.wa_message_id,
+      m.whatsapp_message_id,
+      m.phone,
+      m.text,
+      m.content,
+      m.direction,
+      m.status,
+      m.raw_payload,
+      m.sent_at,
+      m.created_at,
+      m.failed_dismissed
+
+    ORDER BY m.created_at ASC, m.id ASC
   `;
 
   const { rows } = await db.query(sql, [conversationId]);
