@@ -13,6 +13,7 @@ function normalizeMediaType(mediaType = "", mimeType = "") {
   if (raw === "image" || mime.startsWith("image/")) return "image";
   if (raw === "video" || mime.startsWith("video/")) return "video";
   if (raw === "audio" || mime.startsWith("audio/")) return "audio";
+
   if (
     raw === "document" ||
     mime === "application/pdf" ||
@@ -159,7 +160,7 @@ async function insertOutboundMediaMessage({
   ];
 
   const { rows } = await db.query(insertSql, insertValues);
-  return rows[0];
+  return rows[0] || null;
 }
 
 async function updateMessageAfterMediaSent(messageId, waMessageId, rawPayload) {
@@ -287,7 +288,7 @@ async function sendMessage(req, res) {
       });
     }
 
-    let phone = await getPhoneFromConversation(conversation);
+    const phone = await getPhoneFromConversation(conversation);
 
     if (!phone) {
       return res.status(400).json({
@@ -364,7 +365,6 @@ async function sendMessage(req, res) {
           conversationId: conversation.id,
           lastMessageId: updatedMessage.id,
           lastMessageAt: updatedMessage.sent_at || new Date(),
-          preview: bodyText,
         });
 
       const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
@@ -483,7 +483,7 @@ async function retryMessage(req, res) {
       });
     }
 
-    let phone = await getPhoneFromConversation(conversation);
+    const phone = await getPhoneFromConversation(conversation);
     const text = message.text || message.content;
 
     if (!phone || !text) {
@@ -536,7 +536,6 @@ async function retryMessage(req, res) {
         conversationId: message.conversation_id,
         lastMessageId: updatedMessage.id,
         lastMessageAt: updatedMessage.sent_at || new Date(),
-        preview: text,
       });
 
     const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
@@ -696,7 +695,16 @@ async function deleteFailedMessage(req, res) {
 }
 
 async function createMediaMessage(req, res) {
+  const io = getIO();
+  let message = null;
+  let normalizedConversationId = "";
+  let conversation = null;
+  let phone = null;
+
   try {
+    console.log("=== createMediaMessage HIT ===");
+    console.log("createMediaMessage req.body =", req.body);
+
     const { conversationId, customerId, mediaId, caption } = req.body;
 
     if (!conversationId) {
@@ -720,10 +728,10 @@ async function createMediaMessage(req, res) {
       });
     }
 
-    const normalizedConversationId = String(conversationId).trim();
+    normalizedConversationId = String(conversationId).trim();
     const normalizedCustomerId = String(customerId).trim();
 
-    const conversation = await conversationModel.getConversationById(
+    conversation = await conversationModel.getConversationById(
       normalizedConversationId
     );
 
@@ -734,7 +742,7 @@ async function createMediaMessage(req, res) {
       });
     }
 
-    const phone = await getPhoneFromConversation(conversation);
+    phone = await getPhoneFromConversation(conversation);
 
     if (!phone) {
       return res.status(400).json({
@@ -743,7 +751,9 @@ async function createMediaMessage(req, res) {
       });
     }
 
+    console.log("STEP A before findMediaById", { mediaId });
     const media = await mediaRepository.findMediaById(mediaId);
+    console.log("STEP B media loaded", media);
 
     if (!media) {
       return res.status(404).json({
@@ -771,16 +781,18 @@ async function createMediaMessage(req, res) {
     }
 
     const mediaType = normalizeMediaType(media.media_type, media.mime_type);
-    const io = getIO();
 
-    // 1) 先创建本地 outbound message（状态 sending）
-    let message = await insertOutboundMediaMessage({
+    message = await insertOutboundMediaMessage({
       conversationId: normalizedConversationId,
       customerId: normalizedCustomerId,
       phone,
       caption,
       mediaType,
     });
+
+    if (!message) {
+      throw new Error("Failed to create local outbound media message");
+    }
 
     console.log("STEP 1 created local outbound media message", {
       messageId: message.id,
@@ -790,18 +802,25 @@ async function createMediaMessage(req, res) {
       status: message.status,
     });
 
-    // 2) 先把 media 绑到这条 message
-    await mediaRepository.bindMediaToMessage({
+    console.log("STEP C before bindMediaToMessage", {
       mediaId,
       messageId: message.id,
     });
+
+    const boundMedia = await mediaRepository.bindMediaToMessage({
+      mediaId,
+      messageId: message.id,
+    });
+
+    if (!boundMedia) {
+      throw new Error("Failed to bind media to message");
+    }
 
     console.log("STEP 2 media bound to message", {
       mediaId,
       messageId: message.id,
     });
 
-    // 3) 先把“发送中”消息推给前端
     io.emit("message:new", {
       conversationId: normalizedConversationId,
       message: {
@@ -828,173 +847,98 @@ async function createMediaMessage(req, res) {
       },
     });
 
-    let waMessageId = null;
-    let whatsappResponseData = null;
+    const payload = buildWhatsAppMediaPayload({
+      to: phone,
+      media,
+      caption,
+    });
 
-    // 4) 真正发 WhatsApp
-    try {
-      const payload = buildWhatsAppMediaPayload({
-        to: phone,
-        media,
-        caption,
-      });
+    console.log("STEP 3 sending WhatsApp media", {
+      messageId: message.id,
+      mediaType,
+      to: phone,
+      payloadType: payload.type,
+    });
 
-      console.log("STEP 3 sending WhatsApp media", {
-        messageId: message.id,
-        mediaType,
-        to: phone,
-        payloadType: payload.type,
-      });
-
-      const response = await axios.post(
-        `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
-        payload,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 30000,
-        }
-      );
-
-      whatsappResponseData = response.data;
-      waMessageId = response?.data?.messages?.[0]?.id || null;
-
-      console.log("STEP 4 WhatsApp media sent", {
-        messageId: message.id,
-        waMessageId,
-        mediaType,
-        whatsappResponseData,
-      });
-
-      if (!waMessageId) {
-        throw new Error("WhatsApp media send succeeded but waMessageId is missing");
-      }
-    } catch (sendError) {
-      console.error(
-        "❌ createMediaMessage send error:",
-        sendError?.response?.data || sendError.message
-      );
-
-      const failedMessage = await updateMessageAfterMediaFailed(
-        message.id,
-        sendError?.response?.data || { message: sendError.message }
-      );
-
-      const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
-        normalizedConversationId
-      );
-
-      io.emit("message:status", {
-        messageId: failedMessage?.id || message.id,
-        status: failedMessage?.status || "failed",
-        failed_dismissed: failedMessage?.failed_dismissed || false,
-      });
-
-      io.emit("conversation:updated", {
-        conversation: {
-          id: normalizedConversationId,
-          has_failed: hasFailed,
+    const response = await axios.post(
+      `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
         },
-      });
+        timeout: 30000,
+      }
+    );
 
-      const apiError =
-        sendError?.response?.data?.error?.message ||
-        sendError?.response?.data ||
-        sendError.message;
+    const whatsappResponseData = response.data;
+    const waMessageId = response?.data?.messages?.[0]?.id || null;
 
-      return res.status(500).json({
-        success: false,
-        message:
-          typeof apiError === "string" ? apiError : JSON.stringify(apiError),
-      });
+    console.log("STEP 4 WhatsApp media sent", {
+      messageId: message.id,
+      waMessageId,
+      mediaType,
+      whatsappResponseData,
+    });
+
+    if (!waMessageId) {
+      throw new Error("WhatsApp media send succeeded but waMessageId is missing");
     }
 
-    // 5) Graph API 成功后，必须成功更新 DB；失败就直接报错，不再“假 sent”
-    let updatedMessage = null;
+    console.log("STEP 5 before DB update after media sent", {
+      messageId: message.id,
+      waMessageId,
+    });
 
-    try {
-      console.log("STEP 5 before DB update after media sent", {
-        messageId: message.id,
-        waMessageId,
-      });
+    const updatedMessage = await updateMessageAfterMediaSent(
+      message.id,
+      waMessageId,
+      whatsappResponseData
+    );
 
-      updatedMessage = await updateMessageAfterMediaSent(
-        message.id,
-        waMessageId,
-        whatsappResponseData
-      );
+    console.log("STEP 6 DB update result", updatedMessage);
 
-      console.log("STEP 6 DB update result", updatedMessage);
-
-      if (!updatedMessage) {
-        console.error("❌ CRITICAL: updateMessageAfterMediaSent returned null", {
-          messageId: message.id,
-          waMessageId,
-        });
-        throw new Error("Failed to update message status in DB after media send");
-      }
-    } catch (updateErr) {
-      console.error("❌ updateMessageAfterMediaSent error:", updateErr);
-
-      return res.status(500).json({
-        success: false,
-        message: "WhatsApp media sent, but DB update failed",
-        detail: updateErr.message,
-        messageId: message.id,
-        waMessageId,
-      });
+    if (!updatedMessage) {
+      throw new Error("Failed to update message status in DB after media send");
     }
 
     const previewText =
       String(caption || "").trim() || `[${mediaType} message]`;
 
-    try {
-      const updatedConversation =
-        await conversationModel.updateConversationAfterOutbound({
-          conversationId: normalizedConversationId,
-          lastMessageId: updatedMessage.id,
-          lastMessageAt: updatedMessage.sent_at || new Date(),
-          preview: previewText,
-        });
-
-      const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
-        normalizedConversationId
-      );
-
-      console.log("STEP 7 emitting media message status", {
-        messageId: updatedMessage.id,
-        waMessageId,
-        status: updatedMessage.status,
+    const updatedConversation =
+      await conversationModel.updateConversationAfterOutbound({
+        conversationId: normalizedConversationId,
+        lastMessageId: updatedMessage.id,
+        lastMessageAt: updatedMessage.sent_at || new Date(),
       });
 
-      io.emit("message:status", {
-        messageId: updatedMessage.id,
-        waMessageId,
-        status: updatedMessage.status,
-        failed_dismissed: false,
-      });
+    const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
+      normalizedConversationId
+    );
 
-      io.emit("conversation:updated", {
-        conversation: {
-          ...updatedConversation,
-          phone,
-          profile_name: conversation.profile_name,
-          notes: conversation.notes || "",
-          has_failed: hasFailed,
-        },
-      });
-    } catch (conversationErr) {
-      console.error("⚠ updateConversationAfterOutbound error:", conversationErr);
+    console.log("STEP 7 emitting media message status", {
+      messageId: updatedMessage.id,
+      waMessageId,
+      status: updatedMessage.status,
+    });
 
-      io.emit("message:status", {
-        messageId: updatedMessage.id,
-        waMessageId,
-        status: updatedMessage.status,
-        failed_dismissed: false,
-      });
-    }
+    io.emit("message:status", {
+      messageId: updatedMessage.id,
+      waMessageId,
+      status: updatedMessage.status,
+      failed_dismissed: false,
+    });
+
+    io.emit("conversation:updated", {
+      conversation: {
+        ...updatedConversation,
+        phone,
+        profile_name: conversation.profile_name,
+        notes: conversation.notes || "",
+        has_failed: hasFailed,
+      },
+    });
 
     return res.status(201).json({
       success: true,
@@ -1006,7 +950,41 @@ async function createMediaMessage(req, res) {
       whatsapp: whatsappResponseData,
     });
   } catch (error) {
-    console.error("createMediaMessage error:", error);
+    console.error("❌ createMediaMessage FULL ERROR:");
+    console.error(error);
+    console.error(error.stack);
+
+    if (message?.id) {
+      try {
+        const failedMessage = await updateMessageAfterMediaFailed(
+          message.id,
+          { message: error.message, stack: error.stack }
+        );
+
+        io.emit("message:status", {
+          messageId: failedMessage?.id || message.id,
+          status: failedMessage?.status || "failed",
+          failed_dismissed: failedMessage?.failed_dismissed || false,
+        });
+
+        if (normalizedConversationId) {
+          const hasFailed =
+            await messageModel.hasActiveFailedMessagesByConversationId(
+              normalizedConversationId
+            );
+
+          io.emit("conversation:updated", {
+            conversation: {
+              id: normalizedConversationId,
+              has_failed: hasFailed,
+            },
+          });
+        }
+      } catch (markFailedErr) {
+        console.error("mark failed after media error failed:", markFailedErr);
+      }
+    }
+
     return res.status(500).json({
       success: false,
       message: error.message,
