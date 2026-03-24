@@ -167,20 +167,24 @@ async function updateMessageAfterMediaSent(messageId, waMessageId, rawPayload) {
   const sql = `
     UPDATE messages
     SET
-      wa_message_id = $2,
-      whatsapp_message_id = $2,
+      wa_message_id = $2::text,
+      whatsapp_message_id = $3::varchar(255),
       status = 'sent',
-      raw_payload = $3,
+      raw_payload = $4::jsonb,
       sent_at = NOW(),
       updated_at = NOW()
-    WHERE id = $1
+    WHERE id = $1::uuid
     RETURNING *;
   `;
 
+  const waId = waMessageId || null;
+  const payload = rawPayload || null;
+
   const { rows } = await db.query(sql, [
     messageId,
-    waMessageId || null,
-    rawPayload || null,
+    waId,
+    waId,
+    payload,
   ]);
 
   return rows[0] || null;
