@@ -773,6 +773,7 @@ async function createMediaMessage(req, res) {
     const mediaType = normalizeMediaType(media.media_type, media.mime_type);
     const io = getIO();
 
+    // 1) 先创建本地 outbound message（状态 sending）
     let message = await insertOutboundMediaMessage({
       conversationId: normalizedConversationId,
       customerId: normalizedCustomerId,
@@ -781,11 +782,13 @@ async function createMediaMessage(req, res) {
       mediaType,
     });
 
+    // 2) 先把 media 绑到这条 message
     await mediaRepository.bindMediaToMessage({
       mediaId,
       messageId: message.id,
     });
 
+    // 3) 先把“发送中”消息推给前端
     io.emit("message:new", {
       conversationId: normalizedConversationId,
       message: {
@@ -812,6 +815,10 @@ async function createMediaMessage(req, res) {
       },
     });
 
+    let waMessageId = null;
+    let whatsappResponseData = null;
+
+    // 4) 真正发 WhatsApp
     try {
       const payload = buildWhatsAppMediaPayload({
         to: phone,
@@ -831,56 +838,21 @@ async function createMediaMessage(req, res) {
         }
       );
 
-      const waMessageId = response?.data?.messages?.[0]?.id || null;
+      whatsappResponseData = response.data;
+      waMessageId = response?.data?.messages?.[0]?.id || null;
 
-      const updatedMessage = await updateMessageAfterMediaSent(
-        message.id,
+      console.log("✅ WhatsApp media sent:", {
+        messageId: message.id,
         waMessageId,
-        response.data
-      );
-
-      const previewText =
-        String(caption || "").trim() || `[${mediaType} message]`;
-
-      const updatedConversation =
-        await conversationModel.updateConversationAfterOutbound({
-          conversationId: normalizedConversationId,
-          lastMessageId: updatedMessage.id,
-          lastMessageAt: updatedMessage.sent_at || new Date(),
-          preview: previewText,
-        });
-
-      const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
-        normalizedConversationId
-      );
-
-      io.emit("message:status", {
-        messageId: updatedMessage.id,
-        waMessageId,
-        status: updatedMessage.status,
-        failed_dismissed: updatedMessage.failed_dismissed,
-      });
-
-      io.emit("conversation:updated", {
-        conversation: {
-          ...updatedConversation,
-          phone,
-          profile_name: conversation.profile_name,
-          notes: conversation.notes || "",
-          has_failed: hasFailed,
-        },
-      });
-
-      return res.status(201).json({
-        success: true,
-        message: updatedMessage,
-        media: {
-          ...media,
-          message_id: updatedMessage.id,
-        },
-        whatsapp: response.data,
+        mediaType,
       });
     } catch (sendError) {
+      // 只有 Graph API 真失败，才标记 failed
+      console.error(
+        "❌ createMediaMessage send error:",
+        sendError?.response?.data || sendError.message
+      );
+
       const failedMessage = await updateMessageAfterMediaFailed(
         message.id,
         sendError?.response?.data || { message: sendError.message }
@@ -908,14 +880,98 @@ async function createMediaMessage(req, res) {
         sendError?.response?.data ||
         sendError.message;
 
-      console.error("createMediaMessage send error:", apiError);
-
       return res.status(500).json({
         success: false,
         message:
           typeof apiError === "string" ? apiError : JSON.stringify(apiError),
       });
     }
+
+    // 5) Graph API 成功后，本地更新尽量做，但这里失败不再把消息判成 failed
+    let updatedMessage = message;
+
+    try {
+      updatedMessage = await updateMessageAfterMediaSent(
+        message.id,
+        waMessageId,
+        whatsappResponseData
+      );
+
+      if (!updatedMessage) {
+        updatedMessage = {
+          ...message,
+          wa_message_id: waMessageId,
+          whatsapp_message_id: waMessageId,
+          status: "sent",
+          sent_at: new Date().toISOString(),
+        };
+      }
+    } catch (updateErr) {
+      console.error("⚠ updateMessageAfterMediaSent error:", updateErr);
+
+      // 尽量兜底：至少把状态推成 sent
+      updatedMessage = {
+        ...message,
+        wa_message_id: waMessageId,
+        whatsapp_message_id: waMessageId,
+        status: "sent",
+        sent_at: new Date().toISOString(),
+      };
+    }
+
+    const previewText =
+      String(caption || "").trim() || `[${mediaType} message]`;
+
+    try {
+      const updatedConversation =
+        await conversationModel.updateConversationAfterOutbound({
+          conversationId: normalizedConversationId,
+          lastMessageId: updatedMessage.id,
+          lastMessageAt: updatedMessage.sent_at || new Date(),
+          preview: previewText,
+        });
+
+      const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
+        normalizedConversationId
+      );
+
+      io.emit("message:status", {
+        messageId: updatedMessage.id,
+        waMessageId,
+        status: updatedMessage.status || "sent",
+        failed_dismissed: false,
+      });
+
+      io.emit("conversation:updated", {
+        conversation: {
+          ...updatedConversation,
+          phone,
+          profile_name: conversation.profile_name,
+          notes: conversation.notes || "",
+          has_failed: hasFailed,
+        },
+      });
+    } catch (conversationErr) {
+      console.error("⚠ updateConversationAfterOutbound error:", conversationErr);
+
+      // 即使 conversation 更新失败，也不要把发送判成失败
+      io.emit("message:status", {
+        messageId: updatedMessage.id,
+        waMessageId,
+        status: updatedMessage.status || "sent",
+        failed_dismissed: false,
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: updatedMessage,
+      media: {
+        ...media,
+        message_id: updatedMessage.id,
+      },
+      whatsapp: whatsappResponseData,
+    });
   } catch (error) {
     console.error("createMediaMessage error:", error);
     return res.status(500).json({
@@ -924,7 +980,6 @@ async function createMediaMessage(req, res) {
     });
   }
 }
-
 module.exports = {
   getMessagesByConversation,
   createMediaMessage,
