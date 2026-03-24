@@ -6,6 +6,200 @@ const db = require("../config/db");
 const { v4: uuidv4 } = require("uuid");
 const mediaRepository = require("../repositories/media.repository");
 
+function normalizeMediaType(mediaType = "", mimeType = "") {
+  const raw = String(mediaType || "").toLowerCase();
+  const mime = String(mimeType || "").toLowerCase();
+
+  if (raw === "image" || mime.startsWith("image/")) return "image";
+  if (raw === "video" || mime.startsWith("video/")) return "video";
+  if (raw === "audio" || mime.startsWith("audio/")) return "audio";
+  if (
+    raw === "document" ||
+    mime === "application/pdf" ||
+    mime.includes("document") ||
+    mime.includes("msword") ||
+    mime.includes("officedocument")
+  ) {
+    return "document";
+  }
+
+  return "document";
+}
+
+function buildPublicMediaUrl(media) {
+  const publicBaseUrl = (
+    process.env.R2_PUBLIC_BASE_URL ||
+    "https://pub-d65abc185349480ca9b9a2206d2cb381.r2.dev"
+  ).replace(/\/+$/, "");
+
+  const objectKey = String(media?.object_key || "").replace(/^\/+/, "");
+
+  if (!objectKey) {
+    throw new Error("Media object_key is missing");
+  }
+
+  return `${publicBaseUrl}/${objectKey}`;
+}
+
+function buildWhatsAppMediaPayload({ to, media, caption }) {
+  const mediaType = normalizeMediaType(media?.media_type, media?.mime_type);
+  const link = buildPublicMediaUrl(media);
+  const safeCaption = String(caption || "").trim();
+
+  if (mediaType === "image") {
+    return {
+      messaging_product: "whatsapp",
+      to,
+      type: "image",
+      image: {
+        link,
+        ...(safeCaption ? { caption: safeCaption } : {}),
+      },
+    };
+  }
+
+  if (mediaType === "video") {
+    return {
+      messaging_product: "whatsapp",
+      to,
+      type: "video",
+      video: {
+        link,
+        ...(safeCaption ? { caption: safeCaption } : {}),
+      },
+    };
+  }
+
+  if (mediaType === "audio") {
+    return {
+      messaging_product: "whatsapp",
+      to,
+      type: "audio",
+      audio: {
+        link,
+      },
+    };
+  }
+
+  return {
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: {
+      link,
+      ...(safeCaption ? { caption: safeCaption } : {}),
+      ...(media?.original_filename
+        ? { filename: media.original_filename }
+        : {}),
+    },
+  };
+}
+
+async function getPhoneFromConversation(conversation) {
+  let phone = conversation?.phone || null;
+
+  if (!phone && conversation?.customer_id) {
+    const result = await db.query(
+      "SELECT phone FROM customers WHERE id = $1 LIMIT 1",
+      [conversation.customer_id]
+    );
+    phone = result.rows?.[0]?.phone || null;
+  }
+
+  return phone;
+}
+
+async function insertOutboundMediaMessage({
+  conversationId,
+  customerId,
+  phone,
+  caption,
+  mediaType,
+}) {
+  const messageId = uuidv4();
+
+  const insertSql = `
+    INSERT INTO messages (
+      id,
+      conversation_id,
+      customer_id,
+      direction,
+      message_type,
+      content,
+      whatsapp_message_id,
+      status,
+      raw_payload,
+      created_at,
+      updated_at,
+      wa_message_id,
+      phone,
+      sent_at,
+      text,
+      failed_dismissed
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, NULL, $7, NULL, NOW(), NOW(), NULL, $8, NOW(), $9, false
+    )
+    RETURNING *;
+  `;
+
+  const placeholderContent =
+    String(caption || "").trim() || `[${mediaType} message]`;
+
+  const insertValues = [
+    messageId,
+    conversationId,
+    customerId,
+    "outbound",
+    mediaType,
+    placeholderContent,
+    "sending",
+    phone || null,
+    placeholderContent,
+  ];
+
+  const { rows } = await db.query(insertSql, insertValues);
+  return rows[0];
+}
+
+async function updateMessageAfterMediaSent(messageId, waMessageId, rawPayload) {
+  const sql = `
+    UPDATE messages
+    SET
+      wa_message_id = $2,
+      whatsapp_message_id = $2,
+      status = 'sent',
+      raw_payload = $3,
+      sent_at = NOW(),
+      updated_at = NOW()
+    WHERE id = $1
+    RETURNING *;
+  `;
+
+  const { rows } = await db.query(sql, [
+    messageId,
+    waMessageId || null,
+    rawPayload || null,
+  ]);
+
+  return rows[0] || null;
+}
+
+async function updateMessageAfterMediaFailed(messageId, rawPayload) {
+  const sql = `
+    UPDATE messages
+    SET
+      status = 'failed',
+      raw_payload = $2,
+      updated_at = NOW()
+    WHERE id = $1
+    RETURNING *;
+  `;
+
+  const { rows } = await db.query(sql, [messageId, rawPayload || null]);
+  return rows[0] || null;
+}
+
 async function getMessagesByConversation(req, res) {
   try {
     const conversationId = String(req.params.conversationId || "").trim();
@@ -102,15 +296,7 @@ async function sendMessage(req, res) {
       });
     }
 
-    let phone = conversation.phone;
-
-    if (!phone && conversation.customer_id) {
-      const result = await db.query(
-        "SELECT phone FROM customers WHERE id = $1 LIMIT 1",
-        [conversation.customer_id]
-      );
-      phone = result.rows?.[0]?.phone || null;
-    }
+    let phone = await getPhoneFromConversation(conversation);
 
     if (!phone) {
       return res.status(400).json({
@@ -299,16 +485,7 @@ async function retryMessage(req, res) {
       });
     }
 
-    let phone = conversation.phone;
-
-    if (!phone && conversation.customer_id) {
-      const result = await db.query(
-        "SELECT phone FROM customers WHERE id = $1 LIMIT 1",
-        [conversation.customer_id]
-      );
-      phone = result.rows?.[0]?.phone || null;
-    }
-
+    let phone = await getPhoneFromConversation(conversation);
     const text = message.text || message.content;
 
     if (!phone || !text) {
@@ -517,14 +694,10 @@ async function deleteFailedMessage(req, res) {
     });
   }
 }
+
 async function createMediaMessage(req, res) {
   try {
-    const {
-      conversationId,
-      customerId,
-      mediaId,
-      caption,
-    } = req.body;
+    const { conversationId, customerId, mediaId, caption } = req.body;
 
     if (!conversationId) {
       return res.status(400).json({
@@ -547,6 +720,29 @@ async function createMediaMessage(req, res) {
       });
     }
 
+    const normalizedConversationId = String(conversationId).trim();
+    const normalizedCustomerId = String(customerId).trim();
+
+    const conversation = await conversationModel.getConversationById(
+      normalizedConversationId
+    );
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found",
+      });
+    }
+
+    const phone = await getPhoneFromConversation(conversation);
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Customer has no phone number",
+      });
+    }
+
     const media = await mediaRepository.findMediaById(mediaId);
 
     if (!media) {
@@ -556,56 +752,170 @@ async function createMediaMessage(req, res) {
       });
     }
 
-    const messageId = uuidv4();
+    if (!media.object_key) {
+      return res.status(400).json({
+        success: false,
+        message: "Media object_key is missing",
+      });
+    }
 
-    const insertSql = `
-      INSERT INTO messages (
-        id,
-        conversation_id,
-        customer_id,
-        direction,
-        message_type,
-        content,
-        whatsapp_message_id,
-        status,
-        raw_payload,
-        created_at,
-        updated_at,
-        wa_message_id,
-        phone,
-        sent_at,
-        text,
-        failed_dismissed
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, NULL, $7, NULL, NOW(), NOW(), NULL, NULL, NOW(), NULL, false
-      )
-      RETURNING *;
-    `;
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    const graphVersion = process.env.WHATSAPP_GRAPH_VERSION || "v23.0";
 
-    const insertValues = [
-      messageId,
-      conversationId,
-      customerId,
-      "outbound",
-      media.media_type || "image",
-      caption || null,
-      "sent",
-    ];
+    if (!phoneNumberId || !accessToken) {
+      return res.status(500).json({
+        success: false,
+        message: "Missing WhatsApp env config",
+      });
+    }
 
-    const { rows } = await db.query(insertSql, insertValues);
-    const message = rows[0];
+    const mediaType = normalizeMediaType(media.media_type, media.mime_type);
+    const io = getIO();
 
-    const boundMedia = await mediaRepository.bindMediaToMessage({
+    let message = await insertOutboundMediaMessage({
+      conversationId: normalizedConversationId,
+      customerId: normalizedCustomerId,
+      phone,
+      caption,
+      mediaType,
+    });
+
+    await mediaRepository.bindMediaToMessage({
       mediaId,
       messageId: message.id,
     });
 
-    return res.status(201).json({
-      success: true,
-      message,
-      media: boundMedia,
+    io.emit("message:new", {
+      conversationId: normalizedConversationId,
+      message: {
+        ...message,
+        media_assets: [
+          {
+            id: media.id,
+            message_id: message.id,
+            conversation_id: media.conversation_id,
+            customer_id: media.customer_id,
+            direction: "outbound",
+            media_type: media.media_type,
+            mime_type: media.mime_type,
+            original_filename: media.original_filename,
+            file_ext: media.file_ext,
+            file_size: media.file_size,
+            bucket_name: media.bucket_name,
+            object_key: media.object_key,
+            status: media.status,
+            caption: media.caption,
+            created_at: media.created_at,
+          },
+        ],
+      },
     });
+
+    try {
+      const payload = buildWhatsAppMediaPayload({
+        to: phone,
+        media,
+        caption,
+      });
+
+      const response = await axios.post(
+        `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 30000,
+        }
+      );
+
+      const waMessageId = response?.data?.messages?.[0]?.id || null;
+
+      const updatedMessage = await updateMessageAfterMediaSent(
+        message.id,
+        waMessageId,
+        response.data
+      );
+
+      const previewText =
+        String(caption || "").trim() || `[${mediaType} message]`;
+
+      const updatedConversation =
+        await conversationModel.updateConversationAfterOutbound({
+          conversationId: normalizedConversationId,
+          lastMessageId: updatedMessage.id,
+          lastMessageAt: updatedMessage.sent_at || new Date(),
+          preview: previewText,
+        });
+
+      const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
+        normalizedConversationId
+      );
+
+      io.emit("message:status", {
+        messageId: updatedMessage.id,
+        waMessageId,
+        status: updatedMessage.status,
+        failed_dismissed: updatedMessage.failed_dismissed,
+      });
+
+      io.emit("conversation:updated", {
+        conversation: {
+          ...updatedConversation,
+          phone,
+          profile_name: conversation.profile_name,
+          notes: conversation.notes || "",
+          has_failed: hasFailed,
+        },
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: updatedMessage,
+        media: {
+          ...media,
+          message_id: updatedMessage.id,
+        },
+        whatsapp: response.data,
+      });
+    } catch (sendError) {
+      const failedMessage = await updateMessageAfterMediaFailed(
+        message.id,
+        sendError?.response?.data || { message: sendError.message }
+      );
+
+      const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
+        normalizedConversationId
+      );
+
+      io.emit("message:status", {
+        messageId: failedMessage.id,
+        status: failedMessage.status,
+        failed_dismissed: failedMessage.failed_dismissed,
+      });
+
+      io.emit("conversation:updated", {
+        conversation: {
+          id: normalizedConversationId,
+          has_failed: hasFailed,
+        },
+      });
+
+      const apiError =
+        sendError?.response?.data?.error?.message ||
+        sendError?.response?.data ||
+        sendError.message;
+
+      console.error("createMediaMessage send error:", apiError);
+
+      return res.status(500).json({
+        success: false,
+        message:
+          typeof apiError === "string" ? apiError : JSON.stringify(apiError),
+      });
+    }
   } catch (error) {
     console.error("createMediaMessage error:", error);
     return res.status(500).json({
