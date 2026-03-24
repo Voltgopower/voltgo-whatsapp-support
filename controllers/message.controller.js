@@ -110,6 +110,22 @@ async function getPhoneFromConversation(conversation) {
   return phone;
 }
 
+function emitMessageStatus(io, payload) {
+  console.log("📡 EMIT message:status", payload);
+  io.emit("message:status", payload);
+}
+
+function emitConversationUpdated(io, conversation) {
+  console.log("📡 EMIT conversation:updated", {
+    id: conversation?.id,
+    status: conversation?.status,
+    last_message_id: conversation?.last_message_id,
+    last_message_at: conversation?.last_message_at,
+    has_failed: conversation?.has_failed,
+  });
+  io.emit("conversation:updated", { conversation });
+}
+
 async function insertOutboundMediaMessage({
   conversationId,
   customerId,
@@ -195,9 +211,9 @@ async function updateMessageAfterMediaFailed(messageId, rawPayload) {
     UPDATE messages
     SET
       status = 'failed',
-      raw_payload = $2,
+      raw_payload = $2::jsonb,
       updated_at = NOW()
-    WHERE id = $1
+    WHERE id = $1::uuid
     RETURNING *;
   `;
 
@@ -252,8 +268,6 @@ async function getMessagesByConversation(req, res) {
     `;
 
     const { rows } = await db.query(sql, [conversationId]);
-
-    console.log("GET_MESSAGES rows count =", rows.length);
 
     return res.json({
       success: true,
@@ -315,7 +329,7 @@ async function sendMessage(req, res) {
     const bodyText = text.trim();
     const now = new Date();
 
-    let message = await messageModel.createMessage({
+    const message = await messageModel.createMessage({
       conversationId: conversation.id,
       customerId: conversation.customer_id,
       waMessageId: null,
@@ -375,21 +389,19 @@ async function sendMessage(req, res) {
         conversation.id
       );
 
-      io.emit("message:status", {
+      emitMessageStatus(io, {
         messageId: updatedMessage.id,
         waMessageId,
         status: updatedMessage.status,
         failed_dismissed: updatedMessage.failed_dismissed,
       });
 
-      io.emit("conversation:updated", {
-        conversation: {
-          ...updatedConversation,
-          phone,
-          profile_name: conversation.profile_name,
-          notes: conversation.notes || "",
-          has_failed: hasFailed,
-        },
+      emitConversationUpdated(io, {
+        ...updatedConversation,
+        phone,
+        profile_name: conversation.profile_name,
+        notes: conversation.notes || "",
+        has_failed: hasFailed,
       });
 
       return res.json({
@@ -407,17 +419,15 @@ async function sendMessage(req, res) {
         conversation.id
       );
 
-      io.emit("message:status", {
+      emitMessageStatus(io, {
         messageId: failedMessage.id,
         status: failedMessage.status,
         failed_dismissed: failedMessage.failed_dismissed,
       });
 
-      io.emit("conversation:updated", {
-        conversation: {
-          id: conversation.id,
-          has_failed: hasFailed,
-        },
+      emitConversationUpdated(io, {
+        id: conversation.id,
+        has_failed: hasFailed,
       });
 
       const apiError =
@@ -548,21 +558,19 @@ async function retryMessage(req, res) {
 
     const io = getIO();
 
-    io.emit("message:status", {
+    emitMessageStatus(io, {
       messageId: updatedMessage.id,
       waMessageId,
       status: updatedMessage.status,
       failed_dismissed: updatedMessage.failed_dismissed,
     });
 
-    io.emit("conversation:updated", {
-      conversation: {
-        ...updatedConversation,
-        phone,
-        profile_name: conversation.profile_name,
-        notes: conversation.notes || "",
-        has_failed: hasFailed,
-      },
+    emitConversationUpdated(io, {
+      ...updatedConversation,
+      phone,
+      profile_name: conversation.profile_name,
+      notes: conversation.notes || "",
+      has_failed: hasFailed,
     });
 
     return res.json({
@@ -621,17 +629,15 @@ async function dismissFailedMessage(req, res) {
 
     const io = getIO();
 
-    io.emit("message:status", {
+    emitMessageStatus(io, {
       messageId: updatedMessage.id,
       status: updatedMessage.status,
       failed_dismissed: true,
     });
 
-    io.emit("conversation:updated", {
-      conversation: {
-        id: updatedMessage.conversation_id,
-        has_failed: hasFailed,
-      },
+    emitConversationUpdated(io, {
+      id: updatedMessage.conversation_id,
+      has_failed: hasFailed,
     });
 
     return res.json({
@@ -678,11 +684,9 @@ async function deleteFailedMessage(req, res) {
       conversationId: deletedMessage.conversation_id,
     });
 
-    io.emit("conversation:updated", {
-      conversation: {
-        id: deletedMessage.conversation_id,
-        has_failed: hasFailed,
-      },
+    emitConversationUpdated(io, {
+      id: deletedMessage.conversation_id,
+      has_failed: hasFailed,
     });
 
     return res.json({
@@ -806,6 +810,47 @@ async function createMediaMessage(req, res) {
       status: message.status,
     });
 
+    const sendingTimeoutMs = 45000;
+    setTimeout(async () => {
+      try {
+        const check = await db.query(
+          `SELECT id, status FROM messages WHERE id = $1 LIMIT 1`,
+          [message.id]
+        );
+
+        const row = check.rows?.[0];
+        if (row && row.status === "sending") {
+          console.warn("⚠ FORCE FIX sending → failed", {
+            messageId: message.id,
+          });
+
+          const failedMessage = await updateMessageAfterMediaFailed(message.id, {
+            message: "timeout fallback after media send",
+          });
+
+          emitMessageStatus(io, {
+            messageId: failedMessage?.id || message.id,
+            status: failedMessage?.status || "failed",
+            failed_dismissed: failedMessage?.failed_dismissed || false,
+          });
+
+          if (normalizedConversationId) {
+            const hasFailed =
+              await messageModel.hasActiveFailedMessagesByConversationId(
+                normalizedConversationId
+              );
+
+            emitConversationUpdated(io, {
+              id: normalizedConversationId,
+              has_failed: hasFailed,
+            });
+          }
+        }
+      } catch (timeoutErr) {
+        console.error("sending-timeout fallback error:", timeoutErr);
+      }
+    }, sendingTimeoutMs);
+
     console.log("STEP C before bindMediaToMessage", {
       mediaId,
       messageId: message.id,
@@ -907,9 +952,6 @@ async function createMediaMessage(req, res) {
       throw new Error("Failed to update message status in DB after media send");
     }
 
-    const previewText =
-      String(caption || "").trim() || `[${mediaType} message]`;
-
     const updatedConversation =
       await conversationModel.updateConversationAfterOutbound({
         conversationId: normalizedConversationId,
@@ -927,21 +969,19 @@ async function createMediaMessage(req, res) {
       status: updatedMessage.status,
     });
 
-    io.emit("message:status", {
+    emitMessageStatus(io, {
       messageId: updatedMessage.id,
       waMessageId,
       status: updatedMessage.status,
       failed_dismissed: false,
     });
 
-    io.emit("conversation:updated", {
-      conversation: {
-        ...updatedConversation,
-        phone,
-        profile_name: conversation.profile_name,
-        notes: conversation.notes || "",
-        has_failed: hasFailed,
-      },
+    emitConversationUpdated(io, {
+      ...updatedConversation,
+      phone,
+      profile_name: conversation.profile_name,
+      notes: conversation.notes || "",
+      has_failed: hasFailed,
     });
 
     return res.status(201).json({
@@ -965,7 +1005,7 @@ async function createMediaMessage(req, res) {
           { message: error.message, stack: error.stack }
         );
 
-        io.emit("message:status", {
+        emitMessageStatus(io, {
           messageId: failedMessage?.id || message.id,
           status: failedMessage?.status || "failed",
           failed_dismissed: failedMessage?.failed_dismissed || false,
@@ -977,11 +1017,9 @@ async function createMediaMessage(req, res) {
               normalizedConversationId
             );
 
-          io.emit("conversation:updated", {
-            conversation: {
-              id: normalizedConversationId,
-              has_failed: hasFailed,
-            },
+          emitConversationUpdated(io, {
+            id: normalizedConversationId,
+            has_failed: hasFailed,
           });
         }
       } catch (markFailedErr) {

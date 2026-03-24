@@ -1,4 +1,3 @@
-// src/repositories/media.repository.js
 const pool = require("../config/db");
 
 async function createMediaAsset(data) {
