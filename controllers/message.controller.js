@@ -250,15 +250,6 @@ async function getMessagesByConversation(req, res) {
 
     console.log("GET_MESSAGES rows count =", rows.length);
 
-    console.log(
-      "GET_MESSAGES target row =",
-      JSON.stringify(
-        rows.find((r) => r.id === "c55325dd-e03a-4311-924f-f776bc7bc965"),
-        null,
-        2
-      )
-    );
-
     return res.json({
       success: true,
       messages: rows,
@@ -449,7 +440,14 @@ async function sendMessage(req, res) {
 
 async function retryMessage(req, res) {
   try {
-    const messageId = Number(req.params.id);
+    const messageId = String(req.params.id || "").trim();
+
+    if (!messageId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid message id",
+      });
+    }
 
     const message = await messageModel.getMessageById(messageId);
 
@@ -569,13 +567,15 @@ async function retryMessage(req, res) {
       message: updatedMessage,
     });
   } catch (error) {
-    const messageId = Number(req.params.id);
+    const messageId = String(req.params.id || "").trim();
 
     try {
-      await messageModel.markMessageFailed(
-        messageId,
-        error?.response?.data || { message: error.message }
-      );
+      if (messageId) {
+        await messageModel.markMessageFailed(
+          messageId,
+          error?.response?.data || { message: error.message }
+        );
+      }
     } catch (innerError) {
       console.error("markMessageFailed error:", innerError);
     }
@@ -594,9 +594,9 @@ async function retryMessage(req, res) {
 
 async function dismissFailedMessage(req, res) {
   try {
-    const messageId = Number(req.params.id);
+    const messageId = String(req.params.id || "").trim();
 
-    if (!messageId || Number.isNaN(messageId)) {
+    if (!messageId) {
       return res.status(400).json({
         success: false,
         message: "Invalid message id",
@@ -646,9 +646,9 @@ async function dismissFailedMessage(req, res) {
 
 async function deleteFailedMessage(req, res) {
   try {
-    const messageId = Number(req.params.id);
+    const messageId = String(req.params.id || "").trim();
 
-    if (!messageId || Number.isNaN(messageId)) {
+    if (!messageId) {
       return res.status(400).json({
         success: false,
         message: "Invalid message id",
@@ -782,8 +782,21 @@ async function createMediaMessage(req, res) {
       mediaType,
     });
 
+    console.log("STEP 1 created local outbound media message", {
+      messageId: message.id,
+      conversationId: normalizedConversationId,
+      mediaId,
+      mediaType,
+      status: message.status,
+    });
+
     // 2) 先把 media 绑到这条 message
     await mediaRepository.bindMediaToMessage({
+      mediaId,
+      messageId: message.id,
+    });
+
+    console.log("STEP 2 media bound to message", {
       mediaId,
       messageId: message.id,
     });
@@ -826,6 +839,13 @@ async function createMediaMessage(req, res) {
         caption,
       });
 
+      console.log("STEP 3 sending WhatsApp media", {
+        messageId: message.id,
+        mediaType,
+        to: phone,
+        payloadType: payload.type,
+      });
+
       const response = await axios.post(
         `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
         payload,
@@ -841,13 +861,17 @@ async function createMediaMessage(req, res) {
       whatsappResponseData = response.data;
       waMessageId = response?.data?.messages?.[0]?.id || null;
 
-      console.log("✅ WhatsApp media sent:", {
+      console.log("STEP 4 WhatsApp media sent", {
         messageId: message.id,
         waMessageId,
         mediaType,
+        whatsappResponseData,
       });
+
+      if (!waMessageId) {
+        throw new Error("WhatsApp media send succeeded but waMessageId is missing");
+      }
     } catch (sendError) {
-      // 只有 Graph API 真失败，才标记 failed
       console.error(
         "❌ createMediaMessage send error:",
         sendError?.response?.data || sendError.message
@@ -863,9 +887,9 @@ async function createMediaMessage(req, res) {
       );
 
       io.emit("message:status", {
-        messageId: failedMessage.id,
-        status: failedMessage.status,
-        failed_dismissed: failedMessage.failed_dismissed,
+        messageId: failedMessage?.id || message.id,
+        status: failedMessage?.status || "failed",
+        failed_dismissed: failedMessage?.failed_dismissed || false,
       });
 
       io.emit("conversation:updated", {
@@ -887,36 +911,40 @@ async function createMediaMessage(req, res) {
       });
     }
 
-    // 5) Graph API 成功后，本地更新尽量做，但这里失败不再把消息判成 failed
-    let updatedMessage = message;
+    // 5) Graph API 成功后，必须成功更新 DB；失败就直接报错，不再“假 sent”
+    let updatedMessage = null;
 
     try {
+      console.log("STEP 5 before DB update after media sent", {
+        messageId: message.id,
+        waMessageId,
+      });
+
       updatedMessage = await updateMessageAfterMediaSent(
         message.id,
         waMessageId,
         whatsappResponseData
       );
 
+      console.log("STEP 6 DB update result", updatedMessage);
+
       if (!updatedMessage) {
-        updatedMessage = {
-          ...message,
-          wa_message_id: waMessageId,
-          whatsapp_message_id: waMessageId,
-          status: "sent",
-          sent_at: new Date().toISOString(),
-        };
+        console.error("❌ CRITICAL: updateMessageAfterMediaSent returned null", {
+          messageId: message.id,
+          waMessageId,
+        });
+        throw new Error("Failed to update message status in DB after media send");
       }
     } catch (updateErr) {
-      console.error("⚠ updateMessageAfterMediaSent error:", updateErr);
+      console.error("❌ updateMessageAfterMediaSent error:", updateErr);
 
-      // 尽量兜底：至少把状态推成 sent
-      updatedMessage = {
-        ...message,
-        wa_message_id: waMessageId,
-        whatsapp_message_id: waMessageId,
-        status: "sent",
-        sent_at: new Date().toISOString(),
-      };
+      return res.status(500).json({
+        success: false,
+        message: "WhatsApp media sent, but DB update failed",
+        detail: updateErr.message,
+        messageId: message.id,
+        waMessageId,
+      });
     }
 
     const previewText =
@@ -935,10 +963,16 @@ async function createMediaMessage(req, res) {
         normalizedConversationId
       );
 
+      console.log("STEP 7 emitting media message status", {
+        messageId: updatedMessage.id,
+        waMessageId,
+        status: updatedMessage.status,
+      });
+
       io.emit("message:status", {
         messageId: updatedMessage.id,
         waMessageId,
-        status: updatedMessage.status || "sent",
+        status: updatedMessage.status,
         failed_dismissed: false,
       });
 
@@ -954,11 +988,10 @@ async function createMediaMessage(req, res) {
     } catch (conversationErr) {
       console.error("⚠ updateConversationAfterOutbound error:", conversationErr);
 
-      // 即使 conversation 更新失败，也不要把发送判成失败
       io.emit("message:status", {
         messageId: updatedMessage.id,
         waMessageId,
-        status: updatedMessage.status || "sent",
+        status: updatedMessage.status,
         failed_dismissed: false,
       });
     }
@@ -980,6 +1013,7 @@ async function createMediaMessage(req, res) {
     });
   }
 }
+
 module.exports = {
   getMessagesByConversation,
   createMediaMessage,
