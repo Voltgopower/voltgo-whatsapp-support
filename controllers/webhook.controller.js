@@ -1,4 +1,6 @@
-console.log("🔥 WEBHOOK VERSION V5 ACTIVE 🔥");
+console.log("🔥 WEBHOOK VERSION V6 ACTIVE 🔥");
+
+const axios = require("axios");
 
 const customerModel = require("../models/customer.model");
 const conversationModel = require("../models/conversation.model");
@@ -10,6 +12,9 @@ const {
   saveWebhookReceived,
   saveWebhookFailure,
 } = require("../utils/webhookFailSafe");
+const { uploadToR2, bucket } = require("../config/r2");
+const { buildObjectKey } = require("../utils/object-key.util");
+const mediaRepository = require("../repositories/media.repository");
 
 function getInboundMessage(payload) {
   const entry = payload?.entry?.[0];
@@ -38,6 +43,7 @@ function getInboundMessage(payload) {
       ? new Date(Number(message.timestamp) * 1000)
       : new Date(),
     rawPayload: payload,
+    rawMessage: message,
   };
 }
 
@@ -96,6 +102,174 @@ async function reloadConversationForEmit(
     profile_name: customer.profile_name,
     notes: customer.notes || "",
   };
+}
+
+function getInboundMediaMeta(rawMessage) {
+  if (!rawMessage?.type) return null;
+
+  if (rawMessage.type === "image" && rawMessage.image?.id) {
+    return {
+      mediaId: rawMessage.image.id,
+      mediaType: "image",
+      mimeType: rawMessage.image.mime_type || "image/jpeg",
+      originalFilename: `wa_${rawMessage.image.id}.${guessExt(
+        rawMessage.image.mime_type || "image/jpeg"
+      )}`,
+      caption: rawMessage.image.caption || null,
+    };
+  }
+
+  if (rawMessage.type === "video" && rawMessage.video?.id) {
+    return {
+      mediaId: rawMessage.video.id,
+      mediaType: "video",
+      mimeType: rawMessage.video.mime_type || "video/mp4",
+      originalFilename: `wa_${rawMessage.video.id}.${guessExt(
+        rawMessage.video.mime_type || "video/mp4"
+      )}`,
+      caption: rawMessage.video.caption || null,
+    };
+  }
+
+  if (rawMessage.type === "audio" && rawMessage.audio?.id) {
+    return {
+      mediaId: rawMessage.audio.id,
+      mediaType: "audio",
+      mimeType: rawMessage.audio.mime_type || "audio/ogg",
+      originalFilename: `wa_${rawMessage.audio.id}.${guessExt(
+        rawMessage.audio.mime_type || "audio/ogg"
+      )}`,
+      caption: null,
+    };
+  }
+
+  if (rawMessage.type === "document" && rawMessage.document?.id) {
+    return {
+      mediaId: rawMessage.document.id,
+      mediaType: "document",
+      mimeType:
+        rawMessage.document.mime_type || "application/octet-stream",
+      originalFilename:
+        rawMessage.document.filename ||
+        `wa_${rawMessage.document.id}.${guessExt(
+          rawMessage.document.mime_type || "application/octet-stream"
+        )}`,
+      caption: rawMessage.document.caption || null,
+    };
+  }
+
+  return null;
+}
+
+function guessExt(mimeType = "") {
+  if (mimeType.includes("jpeg")) return "jpg";
+  if (mimeType.includes("jpg")) return "jpg";
+  if (mimeType.includes("png")) return "png";
+  if (mimeType.includes("gif")) return "gif";
+  if (mimeType.includes("webp")) return "webp";
+  if (mimeType.includes("mp4")) return "mp4";
+  if (mimeType.includes("mpeg")) return "mpeg";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("mp3")) return "mp3";
+  if (mimeType.includes("pdf")) return "pdf";
+  if (mimeType.includes("word")) return "doc";
+  if (mimeType.includes("officedocument")) return "docx";
+  return "bin";
+}
+
+async function fetchWhatsAppMediaUrl(mediaId) {
+  const graphVersion = process.env.WHATSAPP_GRAPH_VERSION || "v22.0";
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+
+  if (!accessToken) {
+    throw new Error("WHATSAPP_ACCESS_TOKEN is missing");
+  }
+
+  const metaRes = await axios.get(
+    `https://graph.facebook.com/${graphVersion}/${mediaId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  if (!metaRes?.data?.url) {
+    throw new Error("Failed to get WhatsApp media URL");
+  }
+
+  return metaRes.data.url;
+}
+
+async function downloadWhatsAppMediaBuffer(mediaUrl) {
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+
+  const fileRes = await axios.get(mediaUrl, {
+    responseType: "arraybuffer",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  return Buffer.from(fileRes.data);
+}
+
+async function persistInboundMedia({
+  rawMessage,
+  conversation,
+  customer,
+  message,
+}) {
+  const mediaMeta = getInboundMediaMeta(rawMessage);
+
+  if (!mediaMeta) return null;
+
+  console.log("📦 inbound media detected:", mediaMeta);
+
+  const mediaUrl = await fetchWhatsAppMediaUrl(mediaMeta.mediaId);
+  const buffer = await downloadWhatsAppMediaBuffer(mediaUrl);
+
+  const objectKey = buildObjectKey({
+    direction: "inbound",
+    conversationId: conversation.id,
+    messageId: message.id,
+    originalFilename: mediaMeta.originalFilename,
+  });
+
+  await uploadToR2({
+    buffer,
+    key: objectKey,
+    contentType: mediaMeta.mimeType,
+  });
+
+  const fileExt = guessExt(mediaMeta.mimeType);
+
+  const mediaAsset = await mediaRepository.createMediaAsset({
+    message_id: message.id,
+    conversation_id: conversation.id,
+    customer_id: customer.id,
+    channel: "whatsapp",
+    direction: "inbound",
+    media_type: mediaMeta.mediaType,
+    mime_type: mediaMeta.mimeType,
+    original_filename: mediaMeta.originalFilename,
+    file_ext: fileExt || null,
+    file_size: buffer.length,
+    storage_provider: "r2",
+    bucket_name: bucket,
+    object_key: objectKey,
+    status: "ready",
+    caption: mediaMeta.caption,
+    uploaded_by: null,
+  });
+
+  console.log("✅ inbound media stored:", {
+    mediaAssetId: mediaAsset?.id,
+    messageId: message.id,
+    objectKey,
+  });
+
+  return mediaAsset;
 }
 
 async function verifyWebhook(req, res) {
@@ -204,6 +378,17 @@ async function receiveWebhook(req, res) {
       sentAt: incoming.sentAt,
     });
 
+    try {
+      await persistInboundMedia({
+        rawMessage: incoming.rawMessage,
+        conversation,
+        customer,
+        message,
+      });
+    } catch (mediaErr) {
+      console.error("persistInboundMedia error:", mediaErr);
+    }
+
     conversation = await conversationModel.updateConversationAfterInbound({
       conversationId: conversation.id,
       lastMessageId: message.id,
@@ -245,7 +430,6 @@ async function receiveWebhook(req, res) {
         if (intent === "support") {
           targetUserId = 3;
         } else {
-          // sales 和 unknown 都默认分给 sales
           targetUserId = 2;
         }
 
