@@ -1,6 +1,6 @@
 // services/media.service.js
 const path = require('path');
-const { uploadToR2, getObjectSignedUrl } = require('../config/r2');
+const { uploadToR2, bucket } = require('../config/r2');
 const { buildObjectKey } = require('../utils/object-key.util');
 const mediaRepository = require('../repositories/media.repository');
 const { bucket } = require('../config/r2');
@@ -78,19 +78,24 @@ async function getMediaSignedUrl(mediaId) {
   const media = await mediaRepository.findMediaById(mediaId);
 
   if (!media) {
-    throw new Error('Media not found');
+    throw new Error("Media not found");
   }
 
   if (!media.object_key) {
-    throw new Error('Media object_key is missing');
+    throw new Error("Media object_key is missing");
   }
 
-  const url = await getObjectSignedUrl(media.object_key, 60 * 15);
+  const publicBaseUrl =
+    process.env.R2_PUBLIC_BASE_URL ||
+    "https://pub-d65abc185349480ca9b9a2206d2cb381.r2.dev";
+
+  const baseUrl = publicBaseUrl.replace(/\/+$/, "");
+  const objectKey = String(media.object_key).replace(/^\/+/, "");
 
   return {
     id: media.id,
-    url,
-    expiresIn: 900,
+    url: `${baseUrl}/${objectKey}`,
+    expiresIn: null,
     mediaType: media.media_type,
     mimeType: media.mime_type,
     originalFilename: media.original_filename,
