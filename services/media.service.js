@@ -3,7 +3,6 @@ const path = require('path');
 const { uploadToR2, bucket } = require('../config/r2');
 const { buildObjectKey } = require('../utils/object-key.util');
 const mediaRepository = require('../repositories/media.repository');
-const { bucket } = require('../config/r2');
 
 function resolveMediaType(mimeType) {
   if (!mimeType) return 'unknown';
