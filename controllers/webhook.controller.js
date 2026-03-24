@@ -1,4 +1,4 @@
-console.log("🔥 WEBHOOK VERSION V6 ACTIVE 🔥");
+console.log("🔥 WEBHOOK VERSION V7 ACTIVE 🔥");
 
 const axios = require("axios");
 
@@ -62,6 +62,42 @@ function getStatusUpdate(payload) {
   };
 }
 
+function normalizeWebhookStatus(status) {
+  const raw = String(status || "").toLowerCase();
+
+  if (raw === "sent") return "sent";
+  if (raw === "delivered") return "delivered";
+  if (raw === "read") return "read";
+  if (raw === "failed") return "failed";
+
+  return "sent";
+}
+
+function getStatusPriority(status) {
+  const map = {
+    sending: 0,
+    sent: 1,
+    delivered: 2,
+    read: 3,
+    failed: 99,
+  };
+
+  return map[String(status || "").toLowerCase()] ?? -1;
+}
+
+function shouldSkipStatusUpdate(currentStatus, newStatus) {
+  const current = String(currentStatus || "").toLowerCase();
+  const next = String(newStatus || "").toLowerCase();
+
+  if (!current) return false;
+  if (current === next) return true;
+
+  // failed 一旦落库，默认不再被低优先级状态覆盖
+  if (current === "failed" && next !== "failed") return true;
+
+  return getStatusPriority(next) < getStatusPriority(current);
+}
+
 function isConversationUnassigned(conversation) {
   const assignedTo = conversation?.assigned_to;
 
@@ -102,6 +138,37 @@ async function reloadConversationForEmit(
     profile_name: customer.profile_name,
     notes: customer.notes || "",
   };
+}
+
+async function emitConversationAfterStatusUpdate(updatedMessage) {
+  try {
+    if (!updatedMessage?.conversation_id) return;
+
+    const hasFailed =
+      await messageModel.hasActiveFailedMessagesByConversationId(
+        updatedMessage.conversation_id
+      );
+
+    const freshConversation = await conversationModel.getConversationById(
+      updatedMessage.conversation_id
+    );
+
+    const payloadConversation = freshConversation
+      ? {
+          ...freshConversation,
+          has_failed: hasFailed,
+        }
+      : {
+          id: updatedMessage.conversation_id,
+          has_failed: hasFailed,
+        };
+
+    getIO().emit("conversation:updated", {
+      conversation: payloadConversation,
+    });
+  } catch (err) {
+    console.error("emitConversationAfterStatusUpdate error:", err);
+  }
 }
 
 function getInboundMediaMeta(rawMessage) {
@@ -247,7 +314,6 @@ async function persistInboundMedia({
   const mediaAsset = await mediaRepository.createMediaAsset({
     message_id: message.id,
     conversation_id: conversation.id,
-    customer_id: customer.id,
     channel: "whatsapp",
     direction: "inbound",
     media_type: mediaMeta.mediaType,
@@ -301,24 +367,66 @@ async function receiveWebhook(req, res) {
     const statusUpdate = getStatusUpdate(req.body);
 
     if (statusUpdate) {
-      const updatedMessage = await messageModel.updateStatusByWaMessageId(
-        statusUpdate.waMessageId,
-        statusUpdate.status,
-        statusUpdate.rawPayload
-      );
+      try {
+        console.log("📥 webhook status received:", statusUpdate);
 
-      if (updatedMessage) {
-        getIO().emit("message:status", {
-          waMessageId: statusUpdate.waMessageId,
-          status: statusUpdate.status,
-          messageId: updatedMessage.id,
-        });
+        const normalizedStatus = normalizeWebhookStatus(statusUpdate.status);
+
+        const existingMessage = await messageModel.findByExternalMessageId(
+          statusUpdate.waMessageId
+        );
+
+        if (!existingMessage) {
+          console.log(
+            "⚠ status update skipped: message not found",
+            statusUpdate.waMessageId
+          );
+          return res.sendStatus(200);
+        }
+
+        if (
+          shouldSkipStatusUpdate(existingMessage.status, normalizedStatus)
+        ) {
+          console.log("⏭ skip webhook status update", {
+            waMessageId: statusUpdate.waMessageId,
+            currentStatus: existingMessage.status,
+            incomingStatus: normalizedStatus,
+          });
+          return res.sendStatus(200);
+        }
+
+        const updatedMessage = await messageModel.updateStatusByWaMessageId(
+          statusUpdate.waMessageId,
+          normalizedStatus,
+          statusUpdate.rawPayload
+        );
+
+        if (updatedMessage) {
+          console.log("✅ webhook status updated", {
+            messageId: updatedMessage.id,
+            waMessageId: statusUpdate.waMessageId,
+            status: updatedMessage.status,
+          });
+
+          getIO().emit("message:status", {
+            waMessageId: statusUpdate.waMessageId,
+            status: updatedMessage.status,
+            messageId: updatedMessage.id,
+          });
+
+          await emitConversationAfterStatusUpdate(updatedMessage);
+        } else {
+          console.log(
+            "⚠ status update returned no message",
+            statusUpdate.waMessageId
+          );
+        }
+
+        return res.sendStatus(200);
+      } catch (statusErr) {
+        console.error("webhook status update error:", statusErr);
+        return res.sendStatus(200);
       }
-
-      return res.status(200).json({
-        success: true,
-        type: "status",
-      });
     }
 
     const incoming = getInboundMessage(req.body);
