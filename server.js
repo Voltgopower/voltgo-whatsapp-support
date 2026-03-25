@@ -18,6 +18,7 @@ const conversationRoutes = require("./routes/conversation.routes");
 const messageRoutes = require("./routes/message.routes");
 const mediaRoutes = require("./routes/media.routes");
 const healthRoutes = require("./routes/health.routes");
+const noteRoutes = require("./routes/note.routes");
 
 const db = require("./config/db");
 
@@ -84,6 +85,7 @@ console.log("AUTH ROUTE LOADED");
 
 app.use("/api/health", healthRoutes);
 app.use("/api/customers", authMiddleware, customerRoutes);
+app.use("/api/customers", authMiddleware, noteRoutes);
 app.use("/api/conversations", authMiddleware, conversationRoutes);
 app.use("/api/messages", authMiddleware, messageRoutes);
 app.use("/api/media", authMiddleware, mediaRoutes);
