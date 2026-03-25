@@ -1,10 +1,16 @@
 const noteModel = require("../models/note.model");
 
+function isValidUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "").trim()
+  );
+}
+
 async function listNotes(req, res) {
   try {
-    const customerId = Number(req.params.customerId);
+    const customerId = String(req.params.customerId || "").trim();
 
-    if (!customerId || Number.isNaN(customerId)) {
+    if (!customerId || !isValidUuid(customerId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid customer id",
@@ -28,19 +34,19 @@ async function listNotes(req, res) {
 
 async function createNote(req, res) {
   try {
-    const customerId = Number(req.params.customerId);
-    const { content, created_by } = req.body;
+    const customerId = String(req.params.customerId || "").trim();
+    const { content, created_by } = req.body || {};
 
-    const note = content;
+    const note = String(content || "").trim();
 
-    if (!customerId || Number.isNaN(customerId)) {
+    if (!customerId || !isValidUuid(customerId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid customer id",
       });
     }
 
-    if (!note || !String(note).trim()) {
+    if (!note) {
       return res.status(400).json({
         success: false,
         message: "Note is required",
@@ -49,8 +55,8 @@ async function createNote(req, res) {
 
     const newNote = await noteModel.createNote({
       customerId,
-      note: String(note).trim(),
-      createdBy: created_by || "Bruce",
+      note,
+      createdBy: String(created_by || "Bruce").trim(),
     });
 
     return res.json({
@@ -68,9 +74,9 @@ async function createNote(req, res) {
 
 async function deleteNote(req, res) {
   try {
-    const noteId = Number(req.params.noteId);
+    const noteId = String(req.params.noteId || "").trim();
 
-    if (!noteId || Number.isNaN(noteId)) {
+    if (!noteId || !isValidUuid(noteId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid note id",
