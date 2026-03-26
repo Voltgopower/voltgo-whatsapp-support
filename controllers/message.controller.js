@@ -6,6 +6,9 @@ const db = require("../config/db");
 const { v4: uuidv4 } = require("uuid");
 const mediaRepository = require("../repositories/media.repository");
 
+const DIRECT_MEDIA_MAX = 20 * 1024 * 1024; // 20MB
+const DIRECT_LINK_MAX = 100 * 1024 * 1024; // >100MB direct link
+
 function normalizeMediaType(mediaType = "", mimeType = "") {
   const raw = String(mediaType || "").toLowerCase();
   const mime = String(mimeType || "").toLowerCase();
@@ -94,6 +97,32 @@ function buildWhatsAppMediaPayload({ to, media, caption }) {
         : {}),
     },
   };
+}
+
+function buildWhatsAppTextPayload({ to, text }) {
+  return {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: {
+      body: String(text || "").trim(),
+    },
+  };
+}
+
+function buildLinkFallbackText({ fileName, mediaUrl, fileSize, reason }) {
+  const sizeMb = fileSize
+    ? `${(Number(fileSize) / 1024 / 1024).toFixed(2)} MB`
+    : "";
+
+  const header =
+    reason === "oversize"
+      ? "Large file shared as link:"
+      : "File shared as link:";
+
+  return [header, fileName || "attachment", sizeMb, mediaUrl]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function getPhoneFromConversation(conversation) {
@@ -196,12 +225,7 @@ async function updateMessageAfterMediaSent(messageId, waMessageId, rawPayload) {
   const waId = waMessageId || null;
   const payload = rawPayload || null;
 
-  const { rows } = await db.query(sql, [
-    messageId,
-    waId,
-    waId,
-    payload,
-  ]);
+  const { rows } = await db.query(sql, [messageId, waId, waId, payload]);
 
   return rows[0] || null;
 }
@@ -349,14 +373,7 @@ async function sendMessage(req, res) {
     });
 
     try {
-      const payload = {
-        messaging_product: "whatsapp",
-        to: phone,
-        type: "text",
-        text: {
-          body: bodyText,
-        },
-      };
+      const payload = buildWhatsAppTextPayload({ to: phone, text: bodyText });
 
       const response = await axios.post(
         `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
@@ -522,12 +539,7 @@ async function retryMessage(req, res) {
 
     const response = await axios.post(
       `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: phone,
-        type: "text",
-        text: { body: text },
-      },
+      buildWhatsAppTextPayload({ to: phone, text }),
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -909,35 +921,135 @@ async function createMediaMessage(req, res) {
       payloadType: payload.type,
     });
 
-    const response = await axios.post(
-      `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 30000,
+    const fileSize = Number(media.file_size || 0);
+    const mediaUrl = buildPublicMediaUrl(media);
+
+    let waMessageId = null;
+    let whatsappResponseData = null;
+    let transport = "whatsapp_media";
+    let fallbackReason = null;
+
+    if (fileSize > DIRECT_LINK_MAX) {
+      console.log("⚠ oversize media → direct link fallback", {
+        messageId: message.id,
+        fileSize,
+        fileName: media.original_filename,
+      });
+
+      transport = "r2_link";
+      fallbackReason = "oversize";
+
+      const linkText = buildLinkFallbackText({
+        fileName: media.original_filename,
+        mediaUrl,
+        fileSize,
+        reason: fallbackReason,
+      });
+
+      const fallbackResponse = await axios.post(
+        `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+        buildWhatsAppTextPayload({ to: phone, text: linkText }),
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 20000,
+        }
+      );
+
+      whatsappResponseData = fallbackResponse.data;
+      waMessageId = fallbackResponse?.data?.messages?.[0]?.id || null;
+    } else {
+      try {
+        const response = await axios.post(
+          `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+          payload,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 30000,
+          }
+        );
+
+        whatsappResponseData = response.data;
+        waMessageId = response?.data?.messages?.[0]?.id || null;
+
+        if (!waMessageId) {
+          throw new Error("WhatsApp media send succeeded but waMessageId is missing");
+        }
+
+        if (fileSize > DIRECT_MEDIA_MAX) {
+          console.log("ℹ medium file delivered as native media", {
+            messageId: message.id,
+            fileSize,
+          });
+        }
+      } catch (mediaError) {
+        console.warn("⚠ native media send failed → link fallback", {
+          messageId: message.id,
+          fileName: media.original_filename,
+          error:
+            mediaError?.response?.data?.error?.message ||
+            mediaError?.response?.data ||
+            mediaError?.message,
+        });
+
+        transport = "r2_link";
+        fallbackReason = "native_send_failed";
+
+        const linkText = buildLinkFallbackText({
+          fileName: media.original_filename,
+          mediaUrl,
+          fileSize,
+          reason: fallbackReason,
+        });
+
+        const fallbackResponse = await axios.post(
+          `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+          buildWhatsAppTextPayload({ to: phone, text: linkText }),
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 20000,
+          }
+        );
+
+        whatsappResponseData = fallbackResponse.data;
+        waMessageId = fallbackResponse?.data?.messages?.[0]?.id || null;
       }
-    );
+    }
 
-    const whatsappResponseData = response.data;
-    const waMessageId = response?.data?.messages?.[0]?.id || null;
-
-    console.log("STEP 4 WhatsApp media sent", {
+    console.log("STEP 4 media transport result", {
       messageId: message.id,
       waMessageId,
       mediaType,
-      whatsappResponseData,
+      transport,
+      fileSize,
+      fallbackReason,
     });
 
     if (!waMessageId) {
-      throw new Error("WhatsApp media send succeeded but waMessageId is missing");
+      throw new Error("WhatsApp media/link send succeeded but waMessageId is missing");
+    }
+
+    if (whatsappResponseData) {
+      whatsappResponseData._transport = transport;
+      whatsappResponseData._original_media_type = mediaType;
+      whatsappResponseData._media_url = mediaUrl;
+      whatsappResponseData._file_name = media.original_filename || "";
+      whatsappResponseData._file_size = fileSize;
+      whatsappResponseData._fallback_reason = fallbackReason;
     }
 
     console.log("STEP 5 before DB update after media sent", {
       messageId: message.id,
       waMessageId,
+      transport,
     });
 
     const updatedMessage = await updateMessageAfterMediaSent(
@@ -967,6 +1079,7 @@ async function createMediaMessage(req, res) {
       messageId: updatedMessage.id,
       waMessageId,
       status: updatedMessage.status,
+      transport,
     });
 
     emitMessageStatus(io, {
@@ -1000,10 +1113,10 @@ async function createMediaMessage(req, res) {
 
     if (message?.id) {
       try {
-        const failedMessage = await updateMessageAfterMediaFailed(
-          message.id,
-          { message: error.message, stack: error.stack }
-        );
+        const failedMessage = await updateMessageAfterMediaFailed(message.id, {
+          message: error.message,
+          stack: error.stack,
+        });
 
         emitMessageStatus(io, {
           messageId: failedMessage?.id || message.id,
