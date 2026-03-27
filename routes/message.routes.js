@@ -14,7 +14,10 @@ router.post("/send", (req, res, next) => {
   next();
 }, controller.sendMessage);
 
-router.post("/send-media", controller.createMediaMessage);
+router.post("/send-media", (req, res, next) => {
+  console.log("🔥🔥🔥 POST /api/messages/send-media matched");
+  next();
+}, controller.createMediaMessage);
 router.get("/:conversationId", controller.getMessagesByConversation);
 router.post("/:id/retry", controller.retryMessage);
 router.patch("/:id/dismiss-failed", controller.dismissFailedMessage);
