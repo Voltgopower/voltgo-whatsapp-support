@@ -207,6 +207,53 @@ async function insertOutboundMediaMessage({
   return rows[0] || null;
 }
 
+async function insertOutboundTemplateMessage({
+  conversationId,
+  customerId,
+  phone,
+  templateName,
+  renderedText,
+}) {
+  const messageId = uuidv4();
+
+  const insertSql = `
+    INSERT INTO messages (
+      id,
+      conversation_id,
+      customer_id,
+      direction,
+      message_type,
+      content,
+      whatsapp_message_id,
+      status,
+      raw_payload,
+      created_at,
+      updated_at,
+      wa_message_id,
+      phone,
+      sent_at,
+      text,
+      failed_dismissed
+    )
+    VALUES (
+      $1, $2, $3, 'outbound', 'template', $4, NULL, 'sending', NULL, NOW(), NOW(), NULL, $5, NOW(), $6, false
+    )
+    RETURNING *;
+  `;
+
+  const values = [
+    messageId,
+    conversationId,
+    customerId,
+    renderedText || `[template] ${templateName}`,
+    phone || null,
+    renderedText || `[template] ${templateName}`,
+  ];
+
+  const { rows } = await db.query(insertSql, values);
+  return rows[0] || null;
+}
+
 async function updateMessageAfterMediaSent(messageId, waMessageId, rawPayload) {
   const sql = `
     UPDATE messages
@@ -225,7 +272,6 @@ async function updateMessageAfterMediaSent(messageId, waMessageId, rawPayload) {
   const payload = rawPayload || null;
 
   const { rows } = await db.query(sql, [messageId, waId, waId, payload]);
-
   return rows[0] || null;
 }
 
@@ -242,6 +288,13 @@ async function updateMessageAfterMediaFailed(messageId, rawPayload) {
 
   const { rows } = await db.query(sql, [messageId, rawPayload || null]);
   return rows[0] || null;
+}
+
+function renderTemplateText(bodyText = "", params = {}) {
+  return String(bodyText).replace(/\{\{(.*?)\}\}/g, (_, rawKey) => {
+    const key = String(rawKey || "").trim();
+    return params[key] ?? "";
+  });
 }
 
 async function getMessagesByConversation(req, res) {
@@ -464,6 +517,283 @@ async function sendMessage(req, res) {
     return res.status(500).json({
       success: false,
       message: error.message,
+    });
+  }
+}
+
+async function sendTemplateMessage(req, res) {
+  const io = getIO();
+  let localMessage = null;
+
+  try {
+    console.log("=== sendTemplateMessage HIT ===");
+    console.log("sendTemplateMessage req.body =", req.body);
+
+    const {
+      conversationId,
+      templateName,
+      languageCode = "en_US",
+      params = {},
+    } = req.body;
+
+    if (!conversationId) {
+      return res.status(400).json({
+        success: false,
+        message: "conversationId is required",
+      });
+    }
+
+    if (!templateName) {
+      return res.status(400).json({
+        success: false,
+        message: "templateName is required",
+      });
+    }
+
+    const normalizedConversationId = String(conversationId).trim();
+    const normalizedTemplateName = String(templateName).trim();
+
+    const conversation = await conversationModel.getConversationById(
+      normalizedConversationId
+    );
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found",
+      });
+    }
+
+    const phone = await getPhoneFromConversation(conversation);
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Customer has no phone number",
+      });
+    }
+
+    const templateResult = await db.query(
+      `
+      SELECT *
+      FROM templates
+      WHERE template_name = $1
+        AND is_active = true
+      LIMIT 1
+      `,
+      [normalizedTemplateName]
+    );
+
+    const template = templateResult.rows?.[0] || null;
+
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: "Template not found",
+      });
+    }
+
+    const userRole = req.user?.role || "sales";
+    if (
+      template.role_scope !== "all" &&
+      template.role_scope !== userRole
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to use this template",
+      });
+    }
+
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    const graphVersion = process.env.WHATSAPP_GRAPH_VERSION || "v23.0";
+
+    if (!phoneNumberId || !accessToken) {
+      return res.status(500).json({
+        success: false,
+        message: "Missing WhatsApp env config",
+      });
+    }
+
+    const schema = Array.isArray(template.params_schema)
+      ? template.params_schema
+      : [];
+
+    const safeParams =
+      params && typeof params === "object" && !Array.isArray(params)
+        ? params
+        : {};
+
+    const bodyParameters = schema.map((field) => ({
+      type: "text",
+      text: String(safeParams[field.key] ?? ""),
+    }));
+
+    const renderedText = renderTemplateText(
+      template.body_text || "",
+      safeParams
+    );
+
+    localMessage = await insertOutboundTemplateMessage({
+      conversationId: conversation.id,
+      customerId: conversation.customer_id,
+      phone,
+      templateName: template.template_name,
+      renderedText,
+    });
+
+    if (!localMessage) {
+      throw new Error("Failed to create local template message");
+    }
+
+    io.emit("message:new", {
+      conversationId: conversation.id,
+      message: localMessage,
+    });
+
+    const waPayload = {
+      messaging_product: "whatsapp",
+      to: phone,
+      type: "template",
+      template: {
+        name: template.template_name,
+        language: {
+          code: languageCode || template.language || "en_US",
+        },
+        components: [
+          {
+            type: "body",
+            parameters: bodyParameters,
+          },
+        ],
+      },
+    };
+
+    console.log("STEP TEMPLATE sending", {
+      conversationId: conversation.id,
+      templateName: template.template_name,
+      phone,
+      languageCode: languageCode || template.language || "en_US",
+      bodyParameters,
+    });
+
+    const response = await axios.post(
+      `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+      waPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 20000,
+      }
+    );
+
+    const waMessageId = response?.data?.messages?.[0]?.id || null;
+
+    if (!waMessageId) {
+      throw new Error("Template send succeeded but waMessageId is missing");
+    }
+
+    const rawPayload = {
+      ...response.data,
+      _transport: "template",
+      _template_name: template.template_name,
+      _template_language: languageCode || template.language || "en_US",
+      _template_params: safeParams,
+      _rendered_text: renderedText,
+    };
+
+    const updatedMessage = await updateMessageAfterMediaSent(
+      localMessage.id,
+      waMessageId,
+      rawPayload
+    );
+
+    if (!updatedMessage) {
+      throw new Error("Failed to update template message status");
+    }
+
+    const updatedConversation =
+      await conversationModel.updateConversationAfterOutbound({
+        conversationId: conversation.id,
+        lastMessageId: updatedMessage.id,
+        lastMessageAt: updatedMessage.sent_at || new Date(),
+      });
+
+    const hasFailed = await messageModel.hasActiveFailedMessagesByConversationId(
+      conversation.id
+    );
+
+    emitMessageStatus(io, {
+      messageId: updatedMessage.id,
+      waMessageId,
+      status: updatedMessage.status,
+      failed_dismissed: false,
+    });
+
+    emitConversationUpdated(io, {
+      ...updatedConversation,
+      phone,
+      profile_name: conversation.profile_name,
+      notes: conversation.notes || "",
+      has_failed: hasFailed,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: updatedMessage,
+      whatsapp: response.data,
+      template: {
+        template_name: template.template_name,
+        display_name: template.display_name,
+        language: languageCode || template.language || "en_US",
+        rendered_text: renderedText,
+      },
+    });
+  } catch (error) {
+    console.error("❌ sendTemplateMessage FULL ERROR:");
+    console.error(error);
+    console.error(error.stack);
+
+    if (localMessage?.id) {
+      try {
+        const failedMessage = await updateMessageAfterMediaFailed(
+          localMessage.id,
+          {
+            message: error?.response?.data || error.message,
+            stack: error.stack,
+          }
+        );
+
+        emitMessageStatus(io, {
+          messageId: failedMessage?.id || localMessage.id,
+          status: failedMessage?.status || "failed",
+          failed_dismissed: failedMessage?.failed_dismissed || false,
+        });
+
+        if (localMessage.conversation_id) {
+          const hasFailed =
+            await messageModel.hasActiveFailedMessagesByConversationId(
+              localMessage.conversation_id
+            );
+
+          emitConversationUpdated(io, {
+            id: localMessage.conversation_id,
+            has_failed: hasFailed,
+          });
+        }
+      } catch (markFailedErr) {
+        console.error("mark failed after template error failed:", markFailedErr);
+      }
+    }
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.response?.data?.error?.message ||
+        error.message ||
+        "Failed to send template",
     });
   }
 }
@@ -928,7 +1258,6 @@ async function createMediaMessage(req, res) {
     let transport = "whatsapp_media";
     let fallbackReason = null;
 
-    // ✅ 超过 20MB，直接强制走 link fallback
     if (fileSize > DIRECT_MEDIA_MAX) {
       console.log("🚨 FORCE LINK FALLBACK: file too large for native WhatsApp media", {
         messageId: message.id,
@@ -961,7 +1290,6 @@ async function createMediaMessage(req, res) {
       whatsappResponseData = fallbackResponse.data;
       waMessageId = fallbackResponse?.data?.messages?.[0]?.id || null;
     } else {
-      // ✅ 20MB以内才允许走原生媒体
       const response = await axios.post(
         `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
         payload,
@@ -1109,6 +1437,7 @@ module.exports = {
   getMessagesByConversation,
   createMediaMessage,
   sendMessage,
+  sendTemplateMessage,
   retryMessage,
   dismissFailedMessage,
   deleteFailedMessage,
