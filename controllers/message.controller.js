@@ -7,7 +7,6 @@ const { v4: uuidv4 } = require("uuid");
 const mediaRepository = require("../repositories/media.repository");
 
 const DIRECT_MEDIA_MAX = 20 * 1024 * 1024; // 20MB
-const DIRECT_LINK_MAX = 100 * 1024 * 1024; // >100MB direct link
 
 function normalizeMediaType(mediaType = "", mimeType = "") {
   const raw = String(mediaType || "").toLowerCase();
@@ -116,7 +115,7 @@ function buildLinkFallbackText({ fileName, mediaUrl, fileSize, reason }) {
     : "";
 
   const header =
-    reason === "oversize"
+    reason === "force_link_over_20mb"
       ? "Large file shared as link:"
       : "File shared as link:";
 
@@ -929,15 +928,16 @@ async function createMediaMessage(req, res) {
     let transport = "whatsapp_media";
     let fallbackReason = null;
 
-    if (fileSize > DIRECT_LINK_MAX) {
-      console.log("⚠ oversize media → direct link fallback", {
+    // ✅ 超过 20MB，直接强制走 link fallback
+    if (fileSize > DIRECT_MEDIA_MAX) {
+      console.log("🚨 FORCE LINK FALLBACK: file too large for native WhatsApp media", {
         messageId: message.id,
-        fileSize,
         fileName: media.original_filename,
+        fileSize,
       });
 
       transport = "r2_link";
-      fallbackReason = "oversize";
+      fallbackReason = "force_link_over_20mb";
 
       const linkText = buildLinkFallbackText({
         fileName: media.original_filename,
@@ -961,66 +961,24 @@ async function createMediaMessage(req, res) {
       whatsappResponseData = fallbackResponse.data;
       waMessageId = fallbackResponse?.data?.messages?.[0]?.id || null;
     } else {
-      try {
-        const response = await axios.post(
-          `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
-          payload,
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            timeout: 30000,
-          }
-        );
-
-        whatsappResponseData = response.data;
-        waMessageId = response?.data?.messages?.[0]?.id || null;
-
-        if (!waMessageId) {
-          throw new Error("WhatsApp media send succeeded but waMessageId is missing");
+      // ✅ 20MB以内才允许走原生媒体
+      const response = await axios.post(
+        `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 30000,
         }
+      );
 
-        if (fileSize > DIRECT_MEDIA_MAX) {
-          console.log("ℹ medium file delivered as native media", {
-            messageId: message.id,
-            fileSize,
-          });
-        }
-      } catch (mediaError) {
-        console.warn("⚠ native media send failed → link fallback", {
-          messageId: message.id,
-          fileName: media.original_filename,
-          error:
-            mediaError?.response?.data?.error?.message ||
-            mediaError?.response?.data ||
-            mediaError?.message,
-        });
+      whatsappResponseData = response.data;
+      waMessageId = response?.data?.messages?.[0]?.id || null;
 
-        transport = "r2_link";
-        fallbackReason = "native_send_failed";
-
-        const linkText = buildLinkFallbackText({
-          fileName: media.original_filename,
-          mediaUrl,
-          fileSize,
-          reason: fallbackReason,
-        });
-
-        const fallbackResponse = await axios.post(
-          `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
-          buildWhatsAppTextPayload({ to: phone, text: linkText }),
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            timeout: 20000,
-          }
-        );
-
-        whatsappResponseData = fallbackResponse.data;
-        waMessageId = fallbackResponse?.data?.messages?.[0]?.id || null;
+      if (!waMessageId) {
+        throw new Error("WhatsApp media send succeeded but waMessageId is missing");
       }
     }
 
