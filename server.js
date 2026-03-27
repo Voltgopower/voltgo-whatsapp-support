@@ -19,6 +19,7 @@ const messageRoutes = require("./routes/message.routes");
 const mediaRoutes = require("./routes/media.routes");
 const healthRoutes = require("./routes/health.routes");
 const noteRoutes = require("./routes/note.routes");
+const templateRoutes = require("./routes/template.routes");
 
 const db = require("./config/db");
 
@@ -89,6 +90,7 @@ app.use("/api/customers", authMiddleware, noteRoutes);
 app.use("/api/conversations", authMiddleware, conversationRoutes);
 app.use("/api/messages", authMiddleware, messageRoutes);
 app.use("/api/media", authMiddleware, mediaRoutes);
+app.use("/api/templates", templateRoutes);
 
 app.use("/debug", debugRoutes);
 
