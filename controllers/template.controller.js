@@ -10,7 +10,7 @@ if (!role) {
   });
 }
 
-    console.log("🔥 TEMPLATE API HIT - VERSION V2 req.user =", req.user);
+    console.log("TEMPLATE API HIT", role);
 
     let sql = `
       SELECT *
