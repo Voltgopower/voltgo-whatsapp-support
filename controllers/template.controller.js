@@ -2,9 +2,15 @@ const db = require("../config/db");
 
 async function listTemplates(req, res) {
   try {
-    const role = req.user?.role || "sales";
+    const role = req.user?.role;
+if (!role) {
+  return res.status(401).json({
+    success: false,
+    message: "Unauthorized",
+  });
+}
 
-    console.log("🔥 TEMPLATE API HIT - VERSION V2", role);
+    console.log("🔥 TEMPLATE API HIT - VERSION V2 req.user =", req.user);
 
     let sql = `
       SELECT *
