@@ -4,6 +4,8 @@ async function listTemplates(req, res) {
   try {
     const role = req.user?.role || "sales";
 
+    console.log("🔥 listTemplates req.user =", req.user);
+
     let sql = `
       SELECT *
       FROM templates
