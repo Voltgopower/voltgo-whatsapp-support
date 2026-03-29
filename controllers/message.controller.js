@@ -534,6 +534,7 @@ async function sendTemplateMessage(req, res) {
       templateName,
       languageCode = "en_US",
       params = {},
+      bodyParams = [],
     } = req.body;
 
     if (!conversationId) {
@@ -620,19 +621,36 @@ async function sendTemplateMessage(req, res) {
       : [];
 
     const safeParams =
-      params && typeof params === "object" && !Array.isArray(params)
-        ? params
-        : {};
+  params && typeof params === "object" && !Array.isArray(params)
+    ? params
+    : {};
 
-    const bodyParameters = schema.map((field) => ({
-      type: "text",
-      text: String(safeParams[field.key] ?? ""),
-    }));
+const normalizedBodyParams = Array.isArray(bodyParams)
+  ? bodyParams.map((v) => String(v ?? "").trim())
+  : [];
 
-    const renderedText = renderTemplateText(
-      template.body_text || "",
-      safeParams
-    );
+const bodyParameters =
+  normalizedBodyParams.length > 0
+    ? normalizedBodyParams.map((value) => ({
+        type: "text",
+        text: value,
+      }))
+    : schema.map((field) => ({
+        type: "text",
+        text: String(safeParams[field.key] ?? "").trim(),
+      }));
+
+    const renderParams =
+  normalizedBodyParams.length > 0
+    ? Object.fromEntries(
+        normalizedBodyParams.map((value, index) => [String(index + 1), value])
+      )
+    : safeParams;
+
+const renderedText = renderTemplateText(
+  template.body_text || "",
+  renderParams
+);
 
     localMessage = await insertOutboundTemplateMessage({
       conversationId: conversation.id,
@@ -669,13 +687,10 @@ async function sendTemplateMessage(req, res) {
       },
     };
 
-    console.log("STEP TEMPLATE sending", {
-      conversationId: conversation.id,
-      templateName: template.template_name,
-      phone,
-      languageCode: languageCode || template.language || "en_US",
-      bodyParameters,
-    });
+    console.log(
+  "STEP TEMPLATE waPayload =",
+  JSON.stringify(waPayload, null, 2)
+);
 
     const response = await axios.post(
       `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`,
