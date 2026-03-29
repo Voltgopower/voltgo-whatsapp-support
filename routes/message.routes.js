@@ -1,48 +1,22 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const controller = require("../controllers/message.controller");
 
-console.log("=== message.routes.js loaded ===");
+const {
+  getMessagesByConversation,
+  sendMessage,
+  sendTemplateMessage
+} = require('../controllers/message.controller');
 
-router.post(
-  "/",
-  (req, res, next) => {
-    console.log("=== POST /api/messages matched ===");
-    next();
-  },
-  controller.sendMessage
-);
+const authMiddleware = require('../middleware/auth.middleware');
 
-router.post(
-  "/send",
-  (req, res, next) => {
-    console.log("=== POST /api/messages/send matched ===");
-    next();
-  },
-  controller.sendMessage
-);
+console.log('=== message.routes.js loaded ===');
 
-router.post(
-  "/send-template",
-  (req, res, next) => {
-    console.log("🔥🔥🔥 POST /api/messages/send-template matched");
-    next();
-  },
-  controller.sendTemplateMessage
-);
+router.get('/conversation/:conversationId', authMiddleware, getMessagesByConversation);
 
-router.post(
-  "/send-media",
-  (req, res, next) => {
-    console.log("🔥🔥🔥 POST /api/messages/send-media matched");
-    next();
-  },
-  controller.createMediaMessage
-);
+// 普通文本发送
+router.post('/send', authMiddleware, sendMessage);
 
-router.get("/:conversationId", controller.getMessagesByConversation);
-router.post("/:id/retry", controller.retryMessage);
-router.patch("/:id/dismiss-failed", controller.dismissFailedMessage);
-router.delete("/:id", controller.deleteFailedMessage);
+// 模板发送
+router.post('/send-template', authMiddleware, sendTemplateMessage);
 
 module.exports = router;
