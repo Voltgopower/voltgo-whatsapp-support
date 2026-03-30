@@ -537,8 +537,11 @@ async function receiveWebhook(req, res) {
 
         if (intent === "support") {
           targetUserId = 3;
-        } else {
+        } else if (intent === "sales") {
           targetUserId = 2;
+        } else {
+          console.log("skip auto assign: unknown intent");
+          return;
         }
 
         const assignedConversation =

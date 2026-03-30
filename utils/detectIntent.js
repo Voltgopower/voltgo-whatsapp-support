@@ -1,6 +1,14 @@
 function detectIntent(text = "") {
   const t = String(text || "").toLowerCase().trim();
 
+  if (t.includes("sales request")) {
+    return { intent: "sales", salesHits: 999, supportHits: 0 };
+  }
+
+  if (t.includes("support request")) {
+    return { intent: "support", salesHits: 0, supportHits: 999 };
+  }
+
   const salesKeywords = [
     "price",
     "pricing",
