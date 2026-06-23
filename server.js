@@ -78,7 +78,9 @@ app.get("/", (req, res) => {
     message: "Voltgo WhatsApp CRM API is running",
   });
 });
+const portalRoutes = require("./routes/portalRoutes");
 
+app.use("/api/portal", portalRoutes);
 app.use("/webhook", webhookRoutes);
 
 app.use("/api/auth", authRoutes);
