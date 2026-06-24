@@ -1,3 +1,6 @@
+const path = require("path");
+const { v4: uuidv4 } = require("uuid");
+const { uploadToR2, getObjectSignedUrl } = require("../config/r2");
 const repo = require("../repositories/portalRepository");
 
 async function getCustomers(req, res) {
@@ -120,6 +123,76 @@ async function getBatchById(req, res) {
     res.status(500).json({ error: "Failed to load batch detail" });
   }
 }
+async function getDocumentById(req, res) {
+  try {
+    const data = await repo.getDocumentById(req.params.id);
+
+    if (!data) {
+      return res.status(404).json({
+        error: "Document not found",
+      });
+    }
+
+    const { getObjectSignedUrl } = require("../config/r2");
+
+    const download_url = await getObjectSignedUrl(data.file_url, 900);
+
+    res.json({
+      ...data,
+      download_url,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load document" });
+  }
+}
+async function getDocuments(req, res) {
+  try {
+    const data = await repo.getDocuments(req.query);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load documents" });
+  }
+}
+
+async function createDocument(req, res) {
+  try {
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({
+        error: "File is required",
+      });
+    }
+
+    const ext = path.extname(file.originalname || "");
+    const objectKey = `portal-documents/${Date.now()}-${uuidv4()}${ext}`;
+
+    const uploaded = await uploadToR2({
+      buffer: file.buffer,
+      key: objectKey,
+      contentType: file.mimetype,
+    });
+
+    const data = await repo.createDocument({
+      title: req.body.title || file.originalname,
+      category: req.body.category || "other",
+      related_type: req.body.related_type || null,
+      related_id: req.body.related_id || null,
+      file_name: file.originalname,
+      file_url: uploaded.key,
+      file_size: file.size,
+      mime_type: file.mimetype,
+      uploaded_by: req.body.uploaded_by || null,
+    });
+
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to upload document" });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -132,4 +205,8 @@ module.exports = {
   getBatchItems,
   createBatchItem,
   getBatchById,
+
+  getDocuments,
+  createDocument,
+  getDocumentById,
 };

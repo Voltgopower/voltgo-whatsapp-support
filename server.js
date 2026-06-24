@@ -7,6 +7,7 @@ console.log("cwd =", process.cwd());
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
+const path = require("path");
 const { initIO } = require("./socket");
 const debugRoutes = require("./routes/debug.routes");
 const authRoutes = require("./routes/auth.routes");
@@ -25,6 +26,11 @@ const db = require("./config/db");
 
 const app = express();
 const server = http.createServer(app);
+
+app.use(
+  "/uploads",
+  express.static(path.join(process.cwd(), "uploads"))
+);
 
 const PORT = process.env.PORT || 3001;
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";

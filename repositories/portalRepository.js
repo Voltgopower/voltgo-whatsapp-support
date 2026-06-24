@@ -273,6 +273,88 @@ async function getBatchById(batchId) {
     payments: allocationsResult.rows,
   };
 }
+async function getDocuments(filters = {}) {
+  const conditions = [];
+  const values = [];
+
+  if (filters.related_type) {
+    values.push(filters.related_type);
+    conditions.push(`related_type = $${values.length}`);
+  }
+
+  if (filters.related_id) {
+    values.push(Number(filters.related_id));
+    conditions.push(`related_id = $${values.length}`);
+  }
+
+  if (filters.category) {
+    values.push(filters.category);
+    conditions.push(`category = $${values.length}`);
+  }
+
+  const whereSql = conditions.length
+    ? `WHERE ${conditions.join(" AND ")}`
+    : "";
+
+  const result = await db.query(
+    `
+    SELECT *
+    FROM portal_documents
+    ${whereSql}
+    ORDER BY id DESC
+    `,
+    values
+  );
+
+  return result.rows;
+}
+
+async function createDocument(data) {
+  const result = await db.query(
+    `
+    INSERT INTO portal_documents
+    (
+      title,
+      category,
+      related_type,
+      related_id,
+      file_name,
+      file_url,
+      file_size,
+      mime_type,
+      uploaded_by
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    RETURNING *
+    `,
+    [
+      data.title,
+      data.category || "other",
+      data.related_type || null,
+      data.related_id ? Number(data.related_id) : null,
+      data.file_name,
+      data.file_url,
+      data.file_size || null,
+      data.mime_type || null,
+      data.uploaded_by ? Number(data.uploaded_by) : null,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+async function getDocumentById(id) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM portal_documents
+    WHERE id = $1
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -285,4 +367,8 @@ module.exports = {
   getBatchItems,
   createBatchItem,
   getBatchById,
+
+  getDocuments,
+  createDocument,
+  getDocumentById,
 };
