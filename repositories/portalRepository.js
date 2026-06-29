@@ -54,24 +54,31 @@ async function getBatches() {
 }
 
 async function createBatch(data) {
+  console.log("createBatch data =", data);
   const result = await db.query(
     `
     INSERT INTO portal_batches
     (
       batch_no,
       customer_id,
+      dealer_name,
+      po_number,
+      reference,
       shipment_date,
       arrival_date,
       invoice_amount,
       status,
       notes
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     RETURNING *
     `,
     [
       data.batch_no,
-      data.customer_id,
+      data.customer_id || null,
+      data.dealer_name || null,
+      data.po_number || null,
+      data.reference || null,
       data.shipment_date || null,
       data.arrival_date || null,
       data.invoice_amount || 0,
@@ -274,41 +281,32 @@ async function getBatchById(batchId) {
   };
 }
 async function getDocuments(filters = {}) {
-  const conditions = [];
-  const values = [];
+  let sql = `
+    SELECT *
+    FROM portal_documents
+    WHERE 1=1
+  `;
+
+  const params = [];
 
   if (filters.related_type) {
-    values.push(filters.related_type);
-    conditions.push(`related_type = $${values.length}`);
+    params.push(filters.related_type);
+    sql += ` AND related_type = $${params.length}`;
   }
 
   if (filters.related_id) {
-    values.push(Number(filters.related_id));
-    conditions.push(`related_id = $${values.length}`);
+    params.push(filters.related_id);
+    sql += ` AND related_id = $${params.length}`;
   }
 
-  if (filters.category) {
-    values.push(filters.category);
-    conditions.push(`category = $${values.length}`);
-  }
-
-  const whereSql = conditions.length
-    ? `WHERE ${conditions.join(" AND ")}`
-    : "";
-
-  const result = await db.query(
-    `
-    SELECT *
-    FROM portal_documents
-    ${whereSql}
+  sql += `
     ORDER BY id DESC
-    `,
-    values
-  );
+  `;
+
+  const result = await db.query(sql, params);
 
   return result.rows;
 }
-
 async function createDocument(data) {
   const result = await db.query(
     `
@@ -355,6 +353,412 @@ async function getDocumentById(id) {
 
   return result.rows[0];
 }
+async function getShipments(batchId) {
+  const result = await db.query(
+    `
+    SELECT
+      s.*,
+      COALESCE(SUM(sa.allocated_amount), 0) AS linked_amount,
+      STRING_AGG(DISTINCT p.reference_no, ', ') AS linked_payment
+    FROM portal_shipments s
+    LEFT JOIN portal_shipment_allocations sa
+      ON sa.shipment_id = s.id
+    LEFT JOIN portal_payment_allocations pa
+      ON pa.id = sa.allocation_id
+    LEFT JOIN portal_payments p
+      ON p.id = pa.payment_id
+    WHERE s.batch_id = $1
+    GROUP BY s.id
+    ORDER BY s.id
+    `,
+    [batchId]
+  );
+
+  return result.rows;
+}async function createShipment(data) {
+  const { rows } = await db.query(
+    `
+    INSERT INTO portal_shipments
+    (
+      batch_id,
+      shipment_no,
+      carrier,
+      tracking_no,
+      bol_no,
+      container_no,
+      etd,
+      eta,
+      delivered_at,
+      status,
+      notes
+    )
+    VALUES
+    (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+    )
+    RETURNING *
+    `,
+    [
+      data.batch_id,
+      data.shipment_no,
+      data.carrier,
+      data.tracking_no,
+      data.bol_no,
+      data.container_no,
+      data.etd,
+      data.eta,
+      data.delivered_at,
+      data.status,
+      data.notes,
+    ]
+  );
+
+  return rows[0];
+}
+async function getShipmentAllocations(shipmentId) {
+  const result = await db.query(
+    `
+    SELECT
+      sa.*,
+      p.method,
+      p.reference_no,
+      p.payment_date,
+      b.batch_no
+    FROM portal_shipment_allocations sa
+    JOIN portal_payment_allocations pa
+      ON pa.id = sa.allocation_id
+    LEFT JOIN portal_payments p
+      ON p.id = pa.payment_id
+    LEFT JOIN portal_batches b
+      ON b.id = pa.batch_id
+    WHERE sa.shipment_id = $1
+    ORDER BY sa.id
+    `,
+    [shipmentId]
+  );
+
+  return result.rows;
+}async function createShipmentAllocation(data) {
+  const result = await db.query(
+    `
+    INSERT INTO portal_shipment_allocations
+    (
+      shipment_id,
+      allocation_id,
+      allocated_amount,
+      notes
+    )
+    VALUES ($1,$2,$3,$4)
+    RETURNING *
+    `,
+    [
+      data.shipment_id,
+      data.allocation_id,
+      data.allocated_amount || 0,
+      data.notes || null,
+    ]
+  );
+
+  return result.rows[0];
+}
+async function getAvailableAllocations() {
+  const result = await db.query(`
+    SELECT
+      pa.id,
+      pa.allocated_amount,
+      p.method,
+      p.reference_no,
+      p.payment_date,
+      b.batch_no
+    FROM portal_payment_allocations pa
+    LEFT JOIN portal_payments p ON p.id = pa.payment_id
+    LEFT JOIN portal_batches b ON b.id = pa.batch_id
+    ORDER BY pa.id DESC
+  `);
+
+  return result.rows;
+}
+async function deleteShipmentAllocation(id) {
+  const result = await db.query(
+    `
+    DELETE FROM portal_shipment_allocations
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
+async function getSalesReport({ start_date, end_date }) {
+  const params = [start_date, end_date];
+
+  const summaryResult = await db.query(
+    `
+    SELECT
+      COALESCE(SUM(b.invoice_amount), 0) AS total_invoice,
+      COALESCE(SUM(pa.received_amount), 0) AS total_received,
+      COALESCE(SUM(b.invoice_amount - COALESCE(pa.received_amount, 0)), 0) AS total_outstanding,
+      COUNT(DISTINCT b.id) AS batch_count,
+      COUNT(DISTINCT b.customer_id) AS customer_count
+    FROM portal_batches b
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS received_amount
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) pa ON pa.batch_id = b.id
+    WHERE b.shipment_date BETWEEN $1 AND $2
+    `,
+    params
+  );
+
+  const salesBySkuResult = await db.query(
+    `
+    SELECT
+      bi.sku,
+      bi.description,
+      COALESCE(SUM(bi.qty), 0) AS total_qty,
+      COALESCE(SUM(bi.qty * bi.unit_price), 0) AS sales_amount
+    FROM portal_batch_items bi
+    JOIN portal_batches b ON b.id = bi.batch_id
+    WHERE b.shipment_date BETWEEN $1 AND $2
+    GROUP BY bi.sku, bi.description
+    ORDER BY sales_amount DESC
+    `,
+    params
+  );
+
+  const salesByCustomerResult = await db.query(
+    `
+    SELECT
+      c.name AS customer_name,
+      c.company AS customer_company,
+      COALESCE(SUM(b.invoice_amount), 0) AS invoice_amount,
+      COALESCE(SUM(pa.received_amount), 0) AS received_amount,
+      COALESCE(SUM(b.invoice_amount - COALESCE(pa.received_amount, 0)), 0) AS outstanding_amount
+    FROM portal_batches b
+    LEFT JOIN portal_customers c ON c.id = b.customer_id
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS received_amount
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) pa ON pa.batch_id = b.id
+    WHERE b.shipment_date BETWEEN $1 AND $2
+    GROUP BY c.name, c.company
+    ORDER BY invoice_amount DESC
+    `,
+    params
+  );
+
+  const batchDetailsResult = await db.query(
+    `
+    SELECT
+      b.batch_no,
+      c.name AS customer_name,
+      c.company AS customer_company,
+      b.shipment_date,
+      b.invoice_amount,
+      COALESCE(pa.received_amount, 0) AS received_amount,
+      b.invoice_amount - COALESCE(pa.received_amount, 0) AS balance,
+      b.status
+    FROM portal_batches b
+    LEFT JOIN portal_customers c ON c.id = b.customer_id
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS received_amount
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) pa ON pa.batch_id = b.id
+    WHERE b.shipment_date BETWEEN $1 AND $2
+    ORDER BY b.shipment_date DESC, b.id DESC
+    `,
+    params
+  );
+
+  const shipmentDetailsResult = await db.query(
+    `
+    SELECT
+      s.shipment_no,
+      b.batch_no,
+      c.name AS customer_name,
+      s.carrier,
+      s.tracking_no,
+      s.status,
+      s.etd,
+      s.eta,
+      s.delivered_at
+    FROM portal_shipments s
+    JOIN portal_batches b ON b.id = s.batch_id
+    LEFT JOIN portal_customers c ON c.id = b.customer_id
+    WHERE b.shipment_date BETWEEN $1 AND $2
+    ORDER BY b.shipment_date DESC, s.id DESC
+    `,
+    params
+  );
+
+  const paymentDetailsResult = await db.query(
+    `
+    SELECT
+      p.payment_date,
+      p.method,
+      p.reference_no,
+      p.amount AS payment_amount,
+      pa.allocated_amount,
+      b.batch_no,
+      c.name AS customer_name
+    FROM portal_payment_allocations pa
+    JOIN portal_payments p ON p.id = pa.payment_id
+    JOIN portal_batches b ON b.id = pa.batch_id
+    LEFT JOIN portal_customers c ON c.id = b.customer_id
+    WHERE b.shipment_date BETWEEN $1 AND $2
+    ORDER BY p.payment_date DESC, p.id DESC
+    `,
+    params
+  );
+
+  return {
+    summary: summaryResult.rows[0],
+    sales_by_sku: salesBySkuResult.rows,
+    sales_by_customer: salesByCustomerResult.rows,
+    batch_details: batchDetailsResult.rows,
+    shipment_details: shipmentDetailsResult.rows,
+    payment_details: paymentDetailsResult.rows,
+  };
+}
+async function getCustomerStatement({ customer_id, start_date, end_date }) {
+  const params = [customer_id, start_date, end_date];
+
+  const summaryResult = await db.query(
+    `
+    SELECT
+      c.id AS customer_id,
+      c.name AS customer_name,
+      c.company AS customer_company,
+      COALESCE(SUM(b.invoice_amount), 0) AS invoice_amount,
+      COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
+      COALESCE(SUM(b.invoice_amount), 0) - COALESCE(SUM(pa.allocated_amount), 0) AS outstanding_amount,
+      COUNT(DISTINCT b.id) AS batch_count,
+      COUNT(DISTINCT pa.id) AS allocation_count
+    FROM portal_customers c
+    LEFT JOIN portal_batches b
+      ON b.customer_id = c.id
+      AND b.shipment_date BETWEEN $2 AND $3
+    LEFT JOIN portal_payment_allocations pa
+      ON pa.batch_id = b.id
+    WHERE c.id = $1
+    GROUP BY c.id, c.name, c.company
+    `,
+    params
+  );
+
+  const allocationDetailsResult = await db.query(
+    `
+    SELECT
+      pa.id AS allocation_id,
+      b.batch_no,
+      b.shipment_date,
+      b.invoice_amount,
+      p.payment_date,
+      p.method,
+      p.reference_no,
+      p.amount AS payment_amount,
+      pa.allocated_amount,
+      b.invoice_amount - COALESCE(batch_alloc.total_allocated, 0) AS batch_balance,
+      b.status AS batch_status
+    FROM portal_payment_allocations pa
+    JOIN portal_batches b ON b.id = pa.batch_id
+    JOIN portal_payments p ON p.id = pa.payment_id
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS total_allocated
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) batch_alloc ON batch_alloc.batch_id = b.id
+    WHERE b.customer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY b.shipment_date DESC, b.id DESC, pa.id DESC
+    `,
+    params
+  );
+
+  const batchDetailsResult = await db.query(
+    `
+    SELECT
+      b.id,
+      b.batch_no,
+      b.shipment_date,
+      b.invoice_amount,
+      COALESCE(batch_alloc.total_allocated, 0) AS received_amount,
+      b.invoice_amount - COALESCE(batch_alloc.total_allocated, 0) AS balance,
+      b.status
+    FROM portal_batches b
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS total_allocated
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) batch_alloc ON batch_alloc.batch_id = b.id
+    WHERE b.customer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY b.shipment_date DESC, b.id DESC
+    `,
+    params
+  );
+
+  const shipmentDetailsResult = await db.query(
+    `
+    SELECT
+      s.shipment_no,
+      b.batch_no,
+      s.carrier,
+      s.tracking_no,
+      s.status,
+      s.etd,
+      s.eta,
+      s.delivered_at
+    FROM portal_shipments s
+    JOIN portal_batches b ON b.id = s.batch_id
+    WHERE b.customer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY b.shipment_date DESC, s.id DESC
+    `,
+    params
+  );
+
+  const paymentDetailsResult = await db.query(
+    `
+    SELECT DISTINCT
+      p.id,
+      p.payment_date,
+      p.method,
+      p.reference_no,
+      p.amount,
+      p.notes
+    FROM portal_payments p
+    JOIN portal_payment_allocations pa ON pa.payment_id = p.id
+    JOIN portal_batches b ON b.id = pa.batch_id
+    WHERE b.customer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY p.payment_date DESC, p.id DESC
+    `,
+    params
+  );
+
+  return {
+    summary: summaryResult.rows[0],
+    allocation_details: allocationDetailsResult.rows,
+    batch_details: batchDetailsResult.rows,
+    shipment_details: shipmentDetailsResult.rows,
+    payment_details: paymentDetailsResult.rows,
+  };
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -371,4 +775,12 @@ module.exports = {
   getDocuments,
   createDocument,
   getDocumentById,
+  getShipments,
+  createShipment,
+  getShipmentAllocations,
+  createShipmentAllocation,
+  getAvailableAllocations,
+  deleteShipmentAllocation,
+  getSalesReport,
+  getCustomerStatement,
 };

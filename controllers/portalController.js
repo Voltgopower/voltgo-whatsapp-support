@@ -193,6 +193,63 @@ async function createDocument(req, res) {
     res.status(500).json({ error: "Failed to upload document" });
   }
 }
+async function getShipments(req, res) {
+  try {
+    const data = await repo.getShipments(req.params.batchId);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load shipments" });
+  }
+}
+
+async function createShipment(req, res) {
+  try {
+    const data = await repo.createShipment(req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create shipment" });
+  }
+}
+async function getShipmentAllocations(req, res) {
+  try {
+    const data = await repo.getShipmentAllocations(req.params.shipmentId);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load shipment allocations" });
+  }
+}
+
+async function createShipmentAllocation(req, res) {
+  try {
+    const data = await repo.createShipmentAllocation(req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create shipment allocation" });
+  }
+}
+
+async function getAvailableAllocations(req, res) {
+  try {
+    const data = await repo.getAvailableAllocations();
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load available allocations" });
+  }
+}
+async function deleteShipmentAllocation(req, res) {
+  try {
+    const data = await repo.deleteShipmentAllocation(req.params.id);
+    res.json(data || { success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete shipment allocation" });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -209,4 +266,10 @@ module.exports = {
   getDocuments,
   createDocument,
   getDocumentById,
+  getShipments,
+  createShipment,
+  getShipmentAllocations,
+  createShipmentAllocation,
+  getAvailableAllocations,
+  deleteShipmentAllocation,
 };

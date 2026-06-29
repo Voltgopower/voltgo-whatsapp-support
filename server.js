@@ -85,8 +85,10 @@ app.get("/", (req, res) => {
   });
 });
 const portalRoutes = require("./routes/portalRoutes");
+const dealerRoutes = require("./routes/dealerRoutes");
 
 app.use("/api/portal", portalRoutes);
+app.use("/api/dealers", dealerRoutes);
 app.use("/webhook", webhookRoutes);
 
 app.use("/api/auth", authRoutes);
