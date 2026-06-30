@@ -262,14 +262,27 @@ async function getShipmentItems(req, res) {
 
 async function createShipmentItem(req, res) {
   try {
-    const data = await repo.createShipmentItem(
+
+    console.log("========== CREATE SHIPMENT ITEM ==========");
+    console.log(req.body);
+
+    const item = await repo.createShipmentItem(
       req.params.shipmentId,
       req.body
     );
-    res.json(data);
+
+    console.log(item);
+
+    res.json(item);
+
   } catch (err) {
+
     console.error(err);
-    res.status(500).json({ error: "Failed to create shipment item" });
+
+    res.status(500).json({
+      error: "Failed to create shipment item",
+    });
+
   }
 }
 
@@ -321,6 +334,15 @@ async function deleteProduct(req, res) {
     res.status(500).json({ error: "Failed to delete product" });
   }
 }
+async function getBatchProductSummary(req, res) {
+  try {
+    const data = await repo.getBatchProductSummary(req.params.batchId);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load batch product summary" });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -350,4 +372,5 @@ module.exports = {
   createProduct,
   updateProduct,
   deleteProduct,
+  getBatchProductSummary,
 };

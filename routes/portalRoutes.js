@@ -51,8 +51,13 @@ router.delete("/products/:id", controller.deleteProduct);
 router.get("/batches", controller.getBatches);
 router.post("/batches", controller.createBatch);
 router.get("/batches/:id", controller.getBatchById);
+router.get(
+  "/batches/:batchId/product-summary",
+  controller.getBatchProductSummary
+);
 
 router.get("/batches/:batchId/items", controller.getBatchItems);
+
 router.post("/batch-items", controller.createBatchItem);
 
 router.get("/batches/:batchId/shipments", controller.getShipments);

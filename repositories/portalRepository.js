@@ -762,28 +762,49 @@ async function getCustomerStatement({ customer_id, start_date, end_date }) {
 async function getShipmentItems(shipmentId) {
   const result = await db.query(
     `
-    SELECT *
-    FROM portal_shipment_items
-    WHERE shipment_id = $1
-    ORDER BY id ASC
+    SELECT
+      si.id,
+      si.shipment_id,
+      si.product_id,
+      si.description_snapshot,
+      si.qty,
+      si.unit_price,
+      si.discount,
+      si.notes,
+      si.created_at,
+      si.updated_at,
+
+      p.sku,
+      p.product_name,
+      p.category,
+      p.chemistry,
+      p.voltage,
+      p.capacity,
+      p.unit,
+      p.dealer_price,
+
+      (COALESCE(si.qty, 0) * COALESCE(si.unit_price, 0) - COALESCE(si.discount, 0)) AS amount
+    FROM portal_shipment_items si
+    LEFT JOIN portal_products p ON p.id = si.product_id
+    WHERE si.shipment_id = $1
+    ORDER BY si.id ASC
     `,
     [shipmentId]
   );
 
   return result.rows;
 }
-
 async function createShipmentItem(shipmentId, data) {
   const result = await db.query(
     `
     INSERT INTO portal_shipment_items
     (
       shipment_id,
-      sku,
-      product_name,
-      description,
+      product_id,
+      description_snapshot,
       qty,
       unit_price,
+      discount,
       notes
     )
     VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -791,11 +812,11 @@ async function createShipmentItem(shipmentId, data) {
     `,
     [
       shipmentId,
-      data.sku,
-      data.product_name || null,
-      data.description || null,
+      data.product_id || null,
+      data.description_snapshot || null,
       data.qty || 0,
       data.unit_price || 0,
+      data.discount || 0,
       data.notes || null,
     ]
   );
@@ -926,6 +947,42 @@ async function deleteProduct(id) {
 
   return result.rows[0];
 }
+async function getBatchProductSummary(batchId) {
+  const result = await db.query(
+    `
+    SELECT
+      p.id AS product_id,
+      p.sku,
+      p.product_name,
+      p.category,
+      p.chemistry,
+      p.voltage,
+      p.capacity,
+      p.unit,
+      SUM(si.qty) AS total_qty,
+      COUNT(DISTINCT s.id) AS shipment_count,
+      SUM(si.qty * si.unit_price) AS amount,
+      MAX(s.shipment_no) AS latest_shipment_no
+    FROM portal_shipment_items si
+    JOIN portal_shipments s ON s.id = si.shipment_id
+    LEFT JOIN portal_products p ON p.id = si.product_id
+    WHERE s.batch_id = $1
+    GROUP BY
+      p.id,
+      p.sku,
+      p.product_name,
+      p.category,
+      p.chemistry,
+      p.voltage,
+      p.capacity,
+      p.unit
+    ORDER BY p.sku ASC
+    `,
+    [batchId]
+  );
+
+  return result.rows;
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -957,4 +1014,5 @@ module.exports = {
   createProduct,
   updateProduct,
   deleteProduct,
+  getBatchProductSummary,
 };
