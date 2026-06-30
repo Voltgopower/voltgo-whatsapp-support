@@ -759,6 +759,173 @@ async function getCustomerStatement({ customer_id, start_date, end_date }) {
     payment_details: paymentDetailsResult.rows,
   };
 }
+async function getShipmentItems(shipmentId) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM portal_shipment_items
+    WHERE shipment_id = $1
+    ORDER BY id ASC
+    `,
+    [shipmentId]
+  );
+
+  return result.rows;
+}
+
+async function createShipmentItem(shipmentId, data) {
+  const result = await db.query(
+    `
+    INSERT INTO portal_shipment_items
+    (
+      shipment_id,
+      sku,
+      product_name,
+      description,
+      qty,
+      unit_price,
+      notes
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    RETURNING *
+    `,
+    [
+      shipmentId,
+      data.sku,
+      data.product_name || null,
+      data.description || null,
+      data.qty || 0,
+      data.unit_price || 0,
+      data.notes || null,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+async function deleteShipmentItem(id) {
+  const result = await db.query(
+    `
+    DELETE FROM portal_shipment_items
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
+async function getProducts() {
+  const result = await db.query(`
+    SELECT *
+    FROM portal_products
+    ORDER BY active DESC, sku ASC
+  `);
+
+  return result.rows;
+}
+
+async function createProduct(data) {
+  const result = await db.query(
+    `
+    INSERT INTO portal_products
+    (
+      sku,
+      product_name,
+      description,
+      category,
+      chemistry,
+      voltage,
+      capacity,
+      unit,
+      weight,
+      volume,
+      msrp,
+      dealer_price,
+      cost,
+      active
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    RETURNING *
+    `,
+    [
+      data.sku,
+      data.product_name,
+      data.description || null,
+      data.category || null,
+      data.chemistry || null,
+      data.voltage || null,
+      data.capacity || null,
+      data.unit || "pcs",
+      data.weight || null,
+      data.volume || null,
+      data.msrp || 0,
+      data.dealer_price || 0,
+      data.cost || 0,
+      data.active !== false,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+async function updateProduct(id, data) {
+  const result = await db.query(
+    `
+    UPDATE portal_products
+    SET
+      sku = $1,
+      product_name = $2,
+      description = $3,
+      category = $4,
+      chemistry = $5,
+      voltage = $6,
+      capacity = $7,
+      unit = $8,
+      weight = $9,
+      volume = $10,
+      msrp = $11,
+      dealer_price = $12,
+      cost = $13,
+      active = $14,
+      updated_at = NOW()
+    WHERE id = $15
+    RETURNING *
+    `,
+    [
+      data.sku,
+      data.product_name,
+      data.description || null,
+      data.category || null,
+      data.chemistry || null,
+      data.voltage || null,
+      data.capacity || null,
+      data.unit || "pcs",
+      data.weight || null,
+      data.volume || null,
+      data.msrp || 0,
+      data.dealer_price || 0,
+      data.cost || 0,
+      data.active !== false,
+      id,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+async function deleteProduct(id) {
+  const result = await db.query(
+    `
+    DELETE FROM portal_products
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -783,4 +950,11 @@ module.exports = {
   deleteShipmentAllocation,
   getSalesReport,
   getCustomerStatement,
+  getShipmentItems,
+  createShipmentItem,
+  deleteShipmentItem,
+  getProducts,
+  createProduct,
+  updateProduct,
+  deleteProduct,
 };

@@ -250,6 +250,77 @@ async function deleteShipmentAllocation(req, res) {
     res.status(500).json({ error: "Failed to delete shipment allocation" });
   }
 }
+async function getShipmentItems(req, res) {
+  try {
+    const data = await repo.getShipmentItems(req.params.shipmentId);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load shipment items" });
+  }
+}
+
+async function createShipmentItem(req, res) {
+  try {
+    const data = await repo.createShipmentItem(
+      req.params.shipmentId,
+      req.body
+    );
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create shipment item" });
+  }
+}
+
+async function deleteShipmentItem(req, res) {
+  try {
+    const data = await repo.deleteShipmentItem(req.params.id);
+    res.json(data || { success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete shipment item" });
+  }
+}
+async function getProducts(req, res) {
+  try {
+    const data = await repo.getProducts();
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load products" });
+  }
+}
+
+async function createProduct(req, res) {
+  try {
+    const data = await repo.createProduct(req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create product" });
+  }
+}
+
+async function updateProduct(req, res) {
+  try {
+    const data = await repo.updateProduct(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update product" });
+  }
+}
+
+async function deleteProduct(req, res) {
+  try {
+    const data = await repo.deleteProduct(req.params.id);
+    res.json(data || { success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete product" });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -272,4 +343,11 @@ module.exports = {
   createShipmentAllocation,
   getAvailableAllocations,
   deleteShipmentAllocation,
+  getShipmentItems,
+  createShipmentItem,
+  deleteShipmentItem,
+  getProducts,
+  createProduct,
+  updateProduct,
+  deleteProduct,
 };

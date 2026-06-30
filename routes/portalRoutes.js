@@ -36,6 +36,14 @@ router.get(
 router.get("/customers", controller.getCustomers);
 router.post("/customers", controller.createCustomer);
 
+router.get("/products", controller.getProducts);
+
+router.post("/products", controller.createProduct);
+
+router.put("/products/:id", controller.updateProduct);
+
+router.delete("/products/:id", controller.deleteProduct);
+
 // =========================
 // Batches
 // =========================
@@ -85,5 +93,20 @@ router.delete(
 router.get("/documents", controller.getDocuments);
 router.post("/documents", upload.single("file"), controller.createDocument);
 router.get("/documents/:id", controller.getDocumentById);
+
+router.get(
+  "/shipments/:shipmentId/items",
+  controller.getShipmentItems
+);
+
+router.post(
+  "/shipments/:shipmentId/items",
+  controller.createShipmentItem
+);
+
+router.delete(
+  "/shipment-items/:id",
+  controller.deleteShipmentItem
+);
 
 module.exports = router;
