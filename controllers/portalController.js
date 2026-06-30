@@ -343,6 +343,15 @@ async function getBatchProductSummary(req, res) {
     res.status(500).json({ error: "Failed to load batch product summary" });
   }
 }
+async function updateBatch(req, res) {
+  try {
+    const data = await repo.updateBatch(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update batch" });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -373,4 +382,5 @@ module.exports = {
   updateProduct,
   deleteProduct,
   getBatchProductSummary,
+  updateBatch,
 };

@@ -983,6 +983,34 @@ async function getBatchProductSummary(batchId) {
 
   return result.rows;
 }
+async function updateBatch(id, data) {
+  const result = await db.query(
+    `
+    UPDATE portal_batches
+    SET
+      batch_no = $1,
+      customer_name = $2,
+      invoice_amount = $3,
+      received_amount = $4,
+      status = $5,
+      shipment_date = $6,
+      updated_at = NOW()
+    WHERE id = $7
+    RETURNING *
+    `,
+    [
+      data.batch_no,
+      data.customer_name || null,
+      data.invoice_amount || 0,
+      data.received_amount || 0,
+      data.status || "draft",
+      data.shipment_date || null,
+      id,
+    ]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -1015,4 +1043,5 @@ module.exports = {
   updateProduct,
   deleteProduct,
   getBatchProductSummary,
+  updateBatch,
 };

@@ -61,6 +61,7 @@ router.get("/batches/:batchId/items", controller.getBatchItems);
 router.post("/batch-items", controller.createBatchItem);
 
 router.get("/batches/:batchId/shipments", controller.getShipments);
+router.put("/batches/:id", controller.updateBatch);
 
 // =========================
 // Payments / Allocations
