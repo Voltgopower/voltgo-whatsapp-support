@@ -282,8 +282,33 @@ async function getBatchById(batchId) {
 }
 async function getDocuments(filters = {}) {
   let sql = `
-    SELECT *
-    FROM portal_documents
+    SELECT
+      d.*,
+
+      CASE
+        WHEN d.related_type = 'batch' THEN b.batch_no
+        WHEN d.related_type = 'shipment' THEN s.shipment_no
+        WHEN d.related_type = 'payment' THEN p.reference_no
+        ELSE NULL
+      END AS related_label,
+
+      CASE
+        WHEN d.related_type = 'batch' THEN 'Batch'
+        WHEN d.related_type = 'shipment' THEN 'Shipment'
+        WHEN d.related_type = 'payment' THEN 'Payment'
+        ELSE 'General'
+      END AS related_type_label
+
+    FROM portal_documents d
+    LEFT JOIN portal_batches b
+      ON d.related_type = 'batch'
+      AND d.related_id = b.id
+    LEFT JOIN portal_shipments s
+      ON d.related_type = 'shipment'
+      AND d.related_id = s.id
+    LEFT JOIN portal_payments p
+      ON d.related_type = 'payment'
+      AND d.related_id = p.id
     WHERE 1=1
   `;
 
@@ -291,20 +316,19 @@ async function getDocuments(filters = {}) {
 
   if (filters.related_type) {
     params.push(filters.related_type);
-    sql += ` AND related_type = $${params.length}`;
+    sql += ` AND d.related_type = $${params.length}`;
   }
 
   if (filters.related_id) {
     params.push(filters.related_id);
-    sql += ` AND related_id = $${params.length}`;
+    sql += ` AND d.related_id = $${params.length}`;
   }
 
   sql += `
-    ORDER BY id DESC
+    ORDER BY d.id DESC
   `;
 
   const result = await db.query(sql, params);
-
   return result.rows;
 }
 async function createDocument(data) {
