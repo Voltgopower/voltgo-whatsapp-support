@@ -989,20 +989,17 @@ async function updateBatch(id, data) {
     UPDATE portal_batches
     SET
       batch_no = $1,
-      customer_name = $2,
+      dealer_name = $2,
       invoice_amount = $3,
-      received_amount = $4,
-      status = $5,
-      shipment_date = $6,
-      updated_at = NOW()
-    WHERE id = $7
+      status = $4,
+      shipment_date = $5
+    WHERE id = $6
     RETURNING *
     `,
     [
       data.batch_no,
-      data.customer_name || null,
+      data.customer_name || data.dealer_name || null,
       data.invoice_amount || 0,
-      data.received_amount || 0,
       data.status || "draft",
       data.shipment_date || null,
       id,
