@@ -1116,6 +1116,56 @@ async function deletePayment(id) {
 
   return result.rows[0];
 }
+async function deleteShipment(id) {
+  const itemCheck = await db.query(
+    `SELECT COUNT(*)::int AS count FROM portal_shipment_items WHERE shipment_id = $1`,
+    [id]
+  );
+
+  if (itemCheck.rows[0].count > 0) {
+    const err = new Error("Shipment has products and cannot be deleted");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const allocationCheck = await db.query(
+    `SELECT COUNT(*)::int AS count FROM portal_shipment_allocations WHERE shipment_id = $1`,
+    [id]
+  );
+
+  if (allocationCheck.rows[0].count > 0) {
+    const err = new Error("Shipment has linked payments and cannot be deleted");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const documentCheck = await db.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM portal_documents
+    WHERE related_type = 'shipment'
+      AND related_id = $1
+    `,
+    [id]
+  );
+
+  if (documentCheck.rows[0].count > 0) {
+    const err = new Error("Shipment has documents and cannot be deleted");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await db.query(
+    `
+    DELETE FROM portal_shipments
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -1152,4 +1202,5 @@ module.exports = {
   updateShipment,
   updatePayment,
   deletePayment,
+  deleteShipment,
 };

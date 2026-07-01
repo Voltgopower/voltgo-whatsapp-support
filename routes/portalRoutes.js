@@ -83,6 +83,7 @@ router.get("/available-allocations", controller.getAvailableAllocations);
 // =========================
 
 router.post("/shipments", controller.createShipment);
+router.delete("/shipments/:id", controller.deleteShipment);
 
 router.get(
   "/shipments/:shipmentId/allocations",

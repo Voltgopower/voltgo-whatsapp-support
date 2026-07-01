@@ -384,6 +384,17 @@ async function deletePayment(req, res) {
     });
   }
 }
+async function deleteShipment(req, res) {
+  try {
+    const data = await repo.deleteShipment(req.params.id);
+    res.json(data || { success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to delete shipment",
+    });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -418,4 +429,5 @@ module.exports = {
   updateShipment,
   updatePayment,
   deletePayment,
+  deleteShipment,
 };
