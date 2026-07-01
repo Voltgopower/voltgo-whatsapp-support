@@ -1183,6 +1183,18 @@ async function deleteShipment(id) {
 
   return result.rows[0];
 }
+async function deleteDocument(id) {
+  const result = await db.query(
+    `
+    DELETE FROM portal_documents
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -1220,4 +1232,5 @@ module.exports = {
   updatePayment,
   deletePayment,
   deleteShipment,
+  deleteDocument,
 };

@@ -103,6 +103,7 @@ router.put("/shipments/:id", controller.updateShipment);
 router.get("/documents", controller.getDocuments);
 router.post("/documents", upload.single("file"), controller.createDocument);
 router.get("/documents/:id", controller.getDocumentById);
+router.delete("/documents/:id", controller.deleteDocument);
 
 router.get(
   "/shipments/:shipmentId/items",
