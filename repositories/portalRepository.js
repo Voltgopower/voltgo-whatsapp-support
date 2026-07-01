@@ -1061,6 +1061,61 @@ async function updateShipment(id, data) {
 
   return result.rows[0];
 }
+async function updatePayment(id, data) {
+  const result = await db.query(
+    `
+    UPDATE portal_payments
+    SET
+      customer_id = $1,
+      payment_date = $2,
+      amount = $3,
+      method = $4,
+      reference_no = $5,
+      notes = $6
+    WHERE id = $7
+    RETURNING *
+    `,
+    [
+      data.customer_id || null,
+      data.payment_date || null,
+      data.amount || 0,
+      data.method || null,
+      data.reference_no || null,
+      data.notes || null,
+      id,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+async function deletePayment(id) {
+  const allocationCheck = await db.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM portal_payment_allocations
+    WHERE payment_id = $1
+    `,
+    [id]
+  );
+
+  if (allocationCheck.rows[0].count > 0) {
+    const err = new Error("Payment has allocations and cannot be deleted");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await db.query(
+    `
+    DELETE FROM portal_payments
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -1095,4 +1150,6 @@ module.exports = {
   getBatchProductSummary,
   updateBatch,
   updateShipment,
+  updatePayment,
+  deletePayment,
 };

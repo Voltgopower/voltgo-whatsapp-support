@@ -70,6 +70,9 @@ router.put("/batches/:id", controller.updateBatch);
 router.get("/payments", controller.getPayments);
 router.post("/payments", controller.createPayment);
 
+router.put("/payments/:id", controller.updatePayment);
+router.delete("/payments/:id", controller.deletePayment);
+
 router.get("/allocations", controller.getAllocations);
 router.post("/allocations", controller.createAllocation);
 

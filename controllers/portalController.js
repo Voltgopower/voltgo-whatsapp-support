@@ -361,6 +361,29 @@ async function updateShipment(req, res) {
     res.status(500).json({ error: "Failed to update shipment" });
   }
 }
+async function updatePayment(req, res) {
+  try {
+    const data = await repo.updatePayment(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to update payment",
+    });
+  }
+}
+
+async function deletePayment(req, res) {
+  try {
+    const data = await repo.deletePayment(req.params.id);
+    res.json(data || { success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to delete payment",
+    });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -393,4 +416,6 @@ module.exports = {
   getBatchProductSummary,
   updateBatch,
   updateShipment,
+  updatePayment,
+  deletePayment,
 };
