@@ -960,6 +960,23 @@ async function updateProduct(id, data) {
 }
 
 async function deleteProduct(id) {
+  const usageCheck = await db.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM portal_shipment_items
+    WHERE product_id = $1
+    `,
+    [id]
+  );
+
+  if (usageCheck.rows[0].count > 0) {
+    const err = new Error(
+      "Product has been used in shipments and cannot be deleted"
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
   const result = await db.query(
     `
     DELETE FROM portal_products

@@ -328,10 +328,14 @@ async function updateProduct(req, res) {
 async function deleteProduct(req, res) {
   try {
     const data = await repo.deleteProduct(req.params.id);
+
     res.json(data || { success: true });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to delete product" });
+
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to delete product",
+    });
   }
 }
 async function getBatchProductSummary(req, res) {
