@@ -91,7 +91,7 @@ router.delete(
   "/shipment-allocations/:id",
   controller.deleteShipmentAllocation
 );
-
+router.put("/shipments/:id", controller.updateShipment);
 // =========================
 // Documents
 // =========================

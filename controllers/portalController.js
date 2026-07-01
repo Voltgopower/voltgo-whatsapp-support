@@ -352,6 +352,15 @@ async function updateBatch(req, res) {
     res.status(500).json({ error: "Failed to update batch" });
   }
 }
+async function updateShipment(req, res) {
+  try {
+    const data = await repo.updateShipment(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update shipment" });
+  }
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -383,4 +392,5 @@ module.exports = {
   deleteProduct,
   getBatchProductSummary,
   updateBatch,
+  updateShipment,
 };

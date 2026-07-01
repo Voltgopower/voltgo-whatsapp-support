@@ -1032,6 +1032,35 @@ async function updateBatch(id, data) {
 
   return result.rows[0];
 }
+async function updateShipment(id, data) {
+  const result = await db.query(
+    `
+    UPDATE portal_shipments
+    SET
+      shipment_no = $1,
+      carrier = $2,
+      tracking_no = $3,
+      bol_no = $4,
+      container_no = $5,
+      status = $6,
+      notes = $7
+    WHERE id = $8
+    RETURNING *
+    `,
+    [
+      data.shipment_no,
+      data.carrier || null,
+      data.tracking_no || null,
+      data.bol_no || null,
+      data.container_no || null,
+      data.status || "draft",
+      data.notes || null,
+      id,
+    ]
+  );
+
+  return result.rows[0];
+}
 module.exports = {
   getCustomers,
   createCustomer,
@@ -1065,4 +1094,5 @@ module.exports = {
   deleteProduct,
   getBatchProductSummary,
   updateBatch,
+  updateShipment,
 };
