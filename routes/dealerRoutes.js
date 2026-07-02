@@ -17,8 +17,9 @@ router.get(
   dealerController.getMyDashboard
 );
 
-router.get("/:id", dealerController.getDealerById);
-
+// Admin 查看指定 Dealer Dashboard
 router.get("/:id/dashboard", dealerController.getDealerDashboard);
+
+router.get("/:id", dealerController.getDealerById);
 
 module.exports = router;
