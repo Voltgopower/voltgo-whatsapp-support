@@ -56,9 +56,22 @@ async function getDealerDashboard(req, res) {
     });
   }
 }
+async function getMyDashboard(req, res) {
+  try {
+    req.params.id = req.user.dealer_id;
 
+    return getDealerDashboard(req, res);
+  } catch (err) {
+    console.error("Get my dealer dashboard failed:", err);
+
+    res.status(500).json({
+      message: "Failed to get dealer dashboard",
+    });
+  }
+}
 module.exports = {
   getDealers,
   getDealerById,
   getDealerDashboard,
+  getMyDashboard,
 };

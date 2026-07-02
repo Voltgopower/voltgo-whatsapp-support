@@ -13,5 +13,6 @@ router.patch(
   authMiddleware,
   authController.changePassword
 );
+router.post("/dealer/login", authController.dealerLogin);
 
 module.exports = router;

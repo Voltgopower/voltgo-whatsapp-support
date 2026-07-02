@@ -147,8 +147,94 @@ async function changePassword(req, res) {
     });
   }
 }
+// ================= DEALER LOGIN =================
+async function dealerLogin(req, res) {
+  try {
+    const { email, password } = req.body;
 
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "email and password are required",
+      });
+    }
+
+    const result = await db.query(
+      `
+      SELECT *
+      FROM portal_dealer_users
+      WHERE email = $1
+        AND active = TRUE
+      LIMIT 1
+      `,
+      [email]
+    );
+
+    const dealerUser = result.rows[0];
+
+    if (!dealerUser) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
+    if (!dealerUser.password_hash) {
+      return res.status(400).json({
+        success: false,
+        message: "Dealer user password is not set",
+      });
+    }
+
+    const match = await bcrypt.compare(password, dealerUser.password_hash);
+
+    if (!match) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
+    const tokenPayload = {
+      id: dealerUser.id,
+      dealer_user_id: dealerUser.id,
+      dealer_id: dealerUser.dealer_id,
+      name: dealerUser.name,
+      email: dealerUser.email,
+      role: "dealer",
+      user_type: "dealer",
+    };
+
+    const token = generateToken(tokenPayload);
+
+    await db.query(
+      "UPDATE portal_dealer_users SET last_login = NOW() WHERE id = $1",
+      [dealerUser.id]
+    );
+
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id: dealerUser.id,
+        dealerUserId: dealerUser.id,
+        dealerId: dealerUser.dealer_id,
+        name: dealerUser.name,
+        email: dealerUser.email,
+        role: "dealer",
+        userType: "dealer",
+      },
+    });
+  } catch (error) {
+    console.error("dealer login error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+}
 module.exports = {
   login,
+  dealerLogin,
   changePassword,
-};
+}; 
