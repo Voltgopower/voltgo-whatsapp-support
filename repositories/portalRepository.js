@@ -35,8 +35,18 @@ async function createCustomer(data) {
 
   return result.rows[0];
 }
-async function getBatches() {
-  const result = await db.query(`
+async function getBatches({ isDealer = false, dealerId = null } = {}) {
+  const params = [];
+
+  let whereSql = "";
+
+  if (isDealer) {
+    params.push(dealerId);
+    whereSql = `WHERE b.dealer_id = $${params.length}`;
+  }
+
+  const result = await db.query(
+    `
     SELECT
       b.*,
       c.name AS customer_name,
@@ -46,13 +56,15 @@ async function getBatches() {
     FROM portal_batches b
     LEFT JOIN portal_customers c ON c.id = b.customer_id
     LEFT JOIN portal_payment_allocations pa ON pa.batch_id = b.id
+    ${whereSql}
     GROUP BY b.id, c.name, c.company
     ORDER BY b.id DESC
-  `);
+    `,
+    params
+  );
 
   return result.rows;
 }
-
 async function createBatch(data) {
   console.log("createBatch data =", data);
   const result = await db.query(

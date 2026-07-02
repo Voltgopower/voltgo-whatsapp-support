@@ -32,7 +32,14 @@ async function createCustomer(req, res) {
 }
 async function getBatches(req, res) {
   try {
-    const data = await repo.getBatches();
+    const isDealer = req.user?.role === "dealer";
+    const dealerId = req.user?.dealer_id;
+
+    const data = await repo.getBatches({
+      isDealer,
+      dealerId,
+    });
+
     res.json(data);
   } catch (err) {
     console.error(err);
