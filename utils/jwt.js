@@ -8,6 +8,12 @@ function generateToken(user) {
       id: user.id,
       username: user.username,
       role: user.role,
+
+      dealer_id: user.dealer_id,
+      dealer_user_id: user.dealer_user_id,
+      email: user.email,
+      user_type: user.user_type,
+      name: user.name,
     },
     JWT_SECRET,
     { expiresIn: "7d" }
