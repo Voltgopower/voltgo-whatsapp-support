@@ -3,6 +3,7 @@ const multer = require("multer");
 
 const router = express.Router();
 
+const authMiddleware = require("../middleware/auth.middleware");
 const controller = require("../controllers/portalController");
 const reportController = require("../controllers/reportController");
 
@@ -17,8 +18,12 @@ const upload = multer({
 // Reports
 // =========================
 
-router.get("/reports/sales", reportController.getSalesReport);
-router.get("/reports/sales/export", reportController.exportSalesReport);
+router.get("/reports/sales", authMiddleware, reportController.getSalesReport);
+router.get(
+  "/reports/sales/export",
+  authMiddleware,
+  reportController.exportSalesReport
+);
 
 // =========================
 // Statements
@@ -26,6 +31,7 @@ router.get("/reports/sales/export", reportController.exportSalesReport);
 
 router.get(
   "/statements/customer/export",
+  authMiddleware,
   reportController.exportCustomerStatement
 );
 
@@ -33,91 +39,126 @@ router.get(
 // Customers
 // =========================
 
-router.get("/customers", controller.getCustomers);
-router.post("/customers", controller.createCustomer);
+router.get("/customers", authMiddleware, controller.getCustomers);
+router.post("/customers", authMiddleware, controller.createCustomer);
 
-router.get("/products", controller.getProducts);
+// =========================
+// Products
+// =========================
 
-router.post("/products", controller.createProduct);
-
-router.put("/products/:id", controller.updateProduct);
-
-router.delete("/products/:id", controller.deleteProduct);
+router.get("/products", authMiddleware, controller.getProducts);
+router.post("/products", authMiddleware, controller.createProduct);
+router.put("/products/:id", authMiddleware, controller.updateProduct);
+router.delete("/products/:id", authMiddleware, controller.deleteProduct);
 
 // =========================
 // Batches
 // =========================
 
-router.get("/batches", controller.getBatches);
-router.post("/batches", controller.createBatch);
-router.get("/batches/:id", controller.getBatchById);
+router.get("/batches", authMiddleware, controller.getBatches);
+router.post("/batches", authMiddleware, controller.createBatch);
+router.get("/batches/:id", authMiddleware, controller.getBatchById);
+
 router.get(
   "/batches/:batchId/product-summary",
+  authMiddleware,
   controller.getBatchProductSummary
 );
 
-router.get("/batches/:batchId/items", controller.getBatchItems);
+router.get(
+  "/batches/:batchId/items",
+  authMiddleware,
+  controller.getBatchItems
+);
 
-router.post("/batch-items", controller.createBatchItem);
+router.post("/batch-items", authMiddleware, controller.createBatchItem);
 
-router.get("/batches/:batchId/shipments", controller.getShipments);
-router.put("/batches/:id", controller.updateBatch);
+router.get(
+  "/batches/:batchId/shipments",
+  authMiddleware,
+  controller.getShipments
+);
+
+router.put("/batches/:id", authMiddleware, controller.updateBatch);
 
 // =========================
 // Payments / Allocations
 // =========================
 
-router.get("/payments", controller.getPayments);
-router.post("/payments", controller.createPayment);
+router.get("/payments", authMiddleware, controller.getPayments);
+router.post("/payments", authMiddleware, controller.createPayment);
 
-router.put("/payments/:id", controller.updatePayment);
-router.delete("/payments/:id", controller.deletePayment);
+router.put("/payments/:id", authMiddleware, controller.updatePayment);
+router.delete("/payments/:id", authMiddleware, controller.deletePayment);
 
-router.get("/allocations", controller.getAllocations);
-router.post("/allocations", controller.createAllocation);
+router.get("/allocations", authMiddleware, controller.getAllocations);
+router.post("/allocations", authMiddleware, controller.createAllocation);
 
-router.get("/available-allocations", controller.getAvailableAllocations);
+router.get(
+  "/available-allocations",
+  authMiddleware,
+  controller.getAvailableAllocations
+);
 
 // =========================
 // Shipments
 // =========================
 
-router.post("/shipments", controller.createShipment);
-router.delete("/shipments/:id", controller.deleteShipment);
+router.post("/shipments", authMiddleware, controller.createShipment);
+router.delete("/shipments/:id", authMiddleware, controller.deleteShipment);
 
 router.get(
   "/shipments/:shipmentId/allocations",
+  authMiddleware,
   controller.getShipmentAllocations
 );
 
-router.post("/shipment-allocations", controller.createShipmentAllocation);
+router.post(
+  "/shipment-allocations",
+  authMiddleware,
+  controller.createShipmentAllocation
+);
+
 router.delete(
   "/shipment-allocations/:id",
+  authMiddleware,
   controller.deleteShipmentAllocation
 );
-router.put("/shipments/:id", controller.updateShipment);
-// =========================
-// Documents
-// =========================
 
-router.get("/documents", controller.getDocuments);
-router.post("/documents", upload.single("file"), controller.createDocument);
-router.get("/documents/:id", controller.getDocumentById);
-router.delete("/documents/:id", controller.deleteDocument);
+router.put("/shipments/:id", authMiddleware, controller.updateShipment);
 
 router.get(
   "/shipments/:shipmentId/items",
+  authMiddleware,
   controller.getShipmentItems
 );
 
 router.post(
   "/shipments/:shipmentId/items",
+  authMiddleware,
   controller.createShipmentItem
 );
 
 router.delete(
   "/shipment-items/:id",
+  authMiddleware,
   controller.deleteShipmentItem
 );
+
+// =========================
+// Documents
+// =========================
+
+router.get("/documents", authMiddleware, controller.getDocuments);
+
+router.post(
+  "/documents",
+  authMiddleware,
+  upload.single("file"),
+  controller.createDocument
+);
+
+router.get("/documents/:id", authMiddleware, controller.getDocumentById);
+router.delete("/documents/:id", authMiddleware, controller.deleteDocument);
 
 module.exports = router;
