@@ -796,6 +796,137 @@ async function getCustomerStatement({ customer_id, start_date, end_date }) {
     payment_details: paymentDetailsResult.rows,
   };
 }
+async function getDealerStatement({ dealer_id, start_date, end_date }) {
+  const params = [dealer_id, start_date, end_date];
+
+  const summaryResult = await db.query(
+    `
+    SELECT
+      d.id AS dealer_id,
+      d.dealer_code,
+      d.company,
+      d.contact_name,
+      d.email,
+      COALESCE(SUM(b.invoice_amount), 0) AS invoice_amount,
+      COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
+      COALESCE(SUM(b.invoice_amount), 0) - COALESCE(SUM(pa.allocated_amount), 0) AS outstanding_amount,
+      COUNT(DISTINCT b.id) AS batch_count,
+      COUNT(DISTINCT pa.id) AS allocation_count
+    FROM portal_dealers d
+    LEFT JOIN portal_batches b
+      ON b.dealer_id = d.id
+      AND b.shipment_date BETWEEN $2 AND $3
+    LEFT JOIN portal_payment_allocations pa
+      ON pa.batch_id = b.id
+    WHERE d.id = $1
+    GROUP BY d.id, d.dealer_code, d.company, d.contact_name, d.email
+    `,
+    params
+  );
+
+  const batchDetailsResult = await db.query(
+    `
+    SELECT
+      b.id,
+      b.batch_no,
+      b.shipment_date,
+      b.invoice_amount,
+      COALESCE(batch_alloc.total_allocated, 0) AS received_amount,
+      b.invoice_amount - COALESCE(batch_alloc.total_allocated, 0) AS balance,
+      b.status
+    FROM portal_batches b
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS total_allocated
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) batch_alloc ON batch_alloc.batch_id = b.id
+    WHERE b.dealer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY b.shipment_date DESC, b.id DESC
+    `,
+    params
+  );
+
+  const allocationDetailsResult = await db.query(
+    `
+    SELECT
+      pa.id AS allocation_id,
+      b.batch_no,
+      b.shipment_date,
+      b.invoice_amount,
+      p.payment_date,
+      p.method,
+      p.reference_no,
+      p.amount AS payment_amount,
+      pa.allocated_amount,
+      b.invoice_amount - COALESCE(batch_alloc.total_allocated, 0) AS batch_balance,
+      b.status AS batch_status
+    FROM portal_payment_allocations pa
+    JOIN portal_batches b ON b.id = pa.batch_id
+    JOIN portal_payments p ON p.id = pa.payment_id
+    LEFT JOIN (
+      SELECT
+        batch_id,
+        SUM(allocated_amount) AS total_allocated
+      FROM portal_payment_allocations
+      GROUP BY batch_id
+    ) batch_alloc ON batch_alloc.batch_id = b.id
+    WHERE b.dealer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY b.shipment_date DESC, b.id DESC, pa.id DESC
+    `,
+    params
+  );
+
+  const shipmentDetailsResult = await db.query(
+    `
+    SELECT
+      s.shipment_no,
+      b.batch_no,
+      s.carrier,
+      s.tracking_no,
+      s.status,
+      s.etd,
+      s.eta,
+      s.delivered_at
+    FROM portal_shipments s
+    JOIN portal_batches b ON b.id = s.batch_id
+    WHERE b.dealer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY b.shipment_date DESC, s.id DESC
+    `,
+    params
+  );
+
+  const paymentDetailsResult = await db.query(
+    `
+    SELECT DISTINCT
+      p.id,
+      p.payment_date,
+      p.method,
+      p.reference_no,
+      p.amount,
+      p.notes
+    FROM portal_payments p
+    JOIN portal_payment_allocations pa ON pa.payment_id = p.id
+    JOIN portal_batches b ON b.id = pa.batch_id
+    WHERE b.dealer_id = $1
+      AND b.shipment_date BETWEEN $2 AND $3
+    ORDER BY p.payment_date DESC, p.id DESC
+    `,
+    params
+  );
+
+  return {
+    summary: summaryResult.rows[0],
+    allocation_details: allocationDetailsResult.rows,
+    batch_details: batchDetailsResult.rows,
+    shipment_details: shipmentDetailsResult.rows,
+    payment_details: paymentDetailsResult.rows,
+  };
+}
 async function getShipmentItems(shipmentId) {
   const result = await db.query(
     `
@@ -1246,4 +1377,5 @@ module.exports = {
   deletePayment,
   deleteShipment,
   deleteDocument,
+  getDealerStatement,
  };
