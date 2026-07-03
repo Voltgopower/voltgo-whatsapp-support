@@ -61,6 +61,10 @@ async function login(req, res) {
 async function changePassword(req, res) {
   try {
     const userId = req.user?.id;
+    const isDealer =
+      req.user?.role === "dealer" ||
+      req.user?.user_type === "dealer";
+
     const { currentPassword, newPassword, confirmPassword } = req.body;
 
     if (!userId) {
@@ -98,9 +102,10 @@ async function changePassword(req, res) {
       });
     }
 
-    // 1. 获取当前用户
+    const tableName = isDealer ? "portal_dealer_users" : "users";
+
     const result = await db.query(
-      "SELECT id, password_hash FROM users WHERE id = $1 LIMIT 1",
+      `SELECT id, password_hash FROM ${tableName} WHERE id = $1 LIMIT 1`,
       [userId]
     );
 
@@ -113,11 +118,7 @@ async function changePassword(req, res) {
       });
     }
 
-    // 2. 校验旧密码
-    const match = await bcrypt.compare(
-      currentPassword,
-      user.password_hash
-    );
+    const match = await bcrypt.compare(currentPassword, user.password_hash);
 
     if (!match) {
       return res.status(400).json({
@@ -126,12 +127,10 @@ async function changePassword(req, res) {
       });
     }
 
-    // 3. 加密新密码
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // 4. 更新
     await db.query(
-      "UPDATE users SET password_hash = $1 WHERE id = $2",
+      `UPDATE ${tableName} SET password_hash = $1 WHERE id = $2`,
       [hashedPassword, userId]
     );
 
@@ -146,8 +145,7 @@ async function changePassword(req, res) {
       message: "Server error",
     });
   }
-}
-// ================= DEALER LOGIN =================
+}// ================= DEALER LOGIN =================
 async function dealerLogin(req, res) {
   try {
     const { email, password } = req.body;
