@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const bcrypt = require("bcrypt");
 
 async function getCustomers() {
   const result = await db.query(`
@@ -1245,4 +1246,4 @@ module.exports = {
   deletePayment,
   deleteShipment,
   deleteDocument,
-};
+ };
