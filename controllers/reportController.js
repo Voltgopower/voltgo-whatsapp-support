@@ -417,9 +417,34 @@ async function exportCustomerStatement(req, res) {
     });
   }
 }
+async function exportDealerStatement(req, res) {
+  try {
+    const { dealer_id, start_date, end_date } = req.query;
 
+    if (!dealer_id || !start_date || !end_date) {
+      return res.status(400).json({
+        message: "dealer_id, start_date and end_date are required",
+      });
+    }
+
+    const statement = await portalRepository.getDealerStatement({
+      dealer_id,
+      start_date,
+      end_date,
+    });
+
+    res.json(statement);
+  } catch (err) {
+    console.error("Export dealer statement failed:", err);
+
+    res.status(500).json({
+      message: "Failed to export dealer statement",
+    });
+  }
+}
 module.exports = {
   getSalesReport,
   exportSalesReport,
   exportCustomerStatement,
+  exportDealerStatement,
 };

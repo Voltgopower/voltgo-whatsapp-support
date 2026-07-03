@@ -34,6 +34,11 @@ router.get(
   authMiddleware,
   reportController.exportCustomerStatement
 );
+router.get(
+  "/statements/dealer",
+  authMiddleware,
+  reportController.exportDealerStatement
+);
 
 // =========================
 // Customers
