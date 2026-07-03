@@ -1,174 +1,190 @@
 const db = require("../config/db");
+const bcrypt = require("bcrypt");
 
 async function getDealers() {
-  const result = await db.query(
-    `
+  const result = await db.query(`
     SELECT
-      id,
-      dealer_code,
-      company,
-      contact_name,
-      email,
-      phone,
-      country,
-      timezone,
-      currency,
-      language,
-      portal_enabled,
-      status,
-      created_at,
-      updated_at
-    FROM portal_dealers
-    ORDER BY id DESC
-    `
-  );
-
-  return result.rows;
-}
-
-async function getDealerById(id) {
-  const result = await db.query(
-    `
-    SELECT
-      id,
-      dealer_code,
-      company,
-      contact_name,
-      email,
-      phone,
-      country,
-      timezone,
-      currency,
-      language,
-      portal_enabled,
-      status,
-      created_at,
-      updated_at
-    FROM portal_dealers
-    WHERE id = $1
-    `,
-    [id]
-  );
-
-  return result.rows[0] || null;
-}
-
-async function getDealerDashboard(dealerId) {
-  const summaryResult = await db.query(
-    `
-    SELECT
-      d.id AS dealer_id,
-      d.dealer_code,
-      d.company AS dealer_company,
-      d.contact_name,
-      d.email,
-
-      COUNT(DISTINCT c.id) AS customer_count,
-      COUNT(DISTINCT b.id) AS batch_count,
-      COUNT(DISTINCT s.id) AS shipment_count,
-
-      COALESCE(SUM(DISTINCT b.invoice_amount), 0) AS invoice_amount,
-      COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
-      COALESCE(SUM(DISTINCT b.invoice_amount), 0) - COALESCE(SUM(pa.allocated_amount), 0) AS outstanding_amount
-
-    FROM portal_dealers d
-    LEFT JOIN portal_customers c
-      ON c.dealer_id = d.id
-    LEFT JOIN portal_batches b
-      ON b.customer_id = c.id
-    LEFT JOIN portal_shipments s
-      ON s.batch_id = b.id
-    LEFT JOIN portal_payment_allocations pa
-      ON pa.batch_id = b.id
-    WHERE d.id = $1
-    GROUP BY
       d.id,
       d.dealer_code,
       d.company,
       d.contact_name,
-      d.email
-    `,
-    [dealerId]
-  );
+      d.email,
+      d.phone,
+      d.country,
+      d.timezone,
+      d.currency,
+      d.language,
+      d.portal_enabled,
+      d.status,
+      d.created_at,
+      d.updated_at,
+      u.id AS user_id,
+      u.email AS login_email,
+      u.active AS user_active
+    FROM portal_dealers d
+    LEFT JOIN portal_dealer_users u
+      ON u.dealer_id = d.id
+    ORDER BY d.id DESC
+  `);
 
-  const recentBatchesResult = await db.query(
+  return result.rows;
+}
+
+async function createDealer(data) {
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const dealerResult = await client.query(
+      `
+      INSERT INTO portal_dealers
+      (
+        dealer_code,
+        company,
+        contact_name,
+        email,
+        phone,
+        country,
+        timezone,
+        currency,
+        language,
+        portal_enabled,
+        status
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'active')
+      RETURNING *
+      `,
+      [
+        data.dealer_code,
+        data.company,
+        data.contact_name,
+        data.email,
+        data.phone || "",
+        data.country || "USA",
+        data.timezone || "America/Los_Angeles",
+        data.currency || "USD",
+        data.language || "en",
+      ]
+    );
+
+    const dealer = dealerResult.rows[0];
+
+    const passwordHash = await bcrypt.hash(data.password || "Voltgo123!", 10);
+
+    await client.query(
+      `
+      INSERT INTO portal_dealer_users
+      (
+        dealer_id,
+        name,
+        email,
+        password_hash,
+        role,
+        active
+      )
+      VALUES ($1,$2,$3,$4,'admin',true)
+      `,
+      [
+        dealer.id,
+        data.contact_name || data.company,
+        data.email,
+        passwordHash,
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return dealer;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function updateDealer(id, data) {
+  const result = await db.query(
     `
-    SELECT
-      b.id,
-      b.batch_no,
-      b.status,
-      b.shipment_date,
-      b.invoice_amount,
-      c.name AS customer_name,
-      c.company AS customer_company
-    FROM portal_batches b
-    JOIN portal_customers c
-      ON c.id = b.customer_id
-    WHERE c.dealer_id = $1
-    ORDER BY b.id DESC
-    LIMIT 10
+    UPDATE portal_dealers
+    SET
+      company = $1,
+      contact_name = $2,
+      phone = $3,
+      country = $4,
+      timezone = $5,
+      currency = $6,
+      language = $7,
+      updated_at = NOW()
+    WHERE id = $8
+    RETURNING *
     `,
-    [dealerId]
+    [
+      data.company,
+      data.contact_name,
+      data.phone || "",
+      data.country || "USA",
+      data.timezone || "America/Los_Angeles",
+      data.currency || "USD",
+      data.language || "en",
+      id,
+    ]
   );
 
-  const recentShipmentsResult = await db.query(
+  return result.rows[0];
+}
+
+async function updateDealerStatus(id, portalEnabled) {
+  const result = await db.query(
     `
-    SELECT
-      s.id,
-      s.shipment_no,
-      s.carrier,
-      s.tracking_no,
-      s.status,
-      s.etd,
-      s.eta,
-      s.delivered_at,
-      b.batch_no,
-      c.company AS customer_company
-    FROM portal_shipments s
-    JOIN portal_batches b
-      ON b.id = s.batch_id
-    JOIN portal_customers c
-      ON c.id = b.customer_id
-    WHERE c.dealer_id = $1
-    ORDER BY s.id DESC
-    LIMIT 10
+    UPDATE portal_dealers
+    SET
+      portal_enabled = $1,
+      status = $2,
+      updated_at = NOW()
+    WHERE id = $3
+    RETURNING *
     `,
-    [dealerId]
+    [
+      portalEnabled,
+      portalEnabled ? "active" : "disabled",
+      id,
+    ]
   );
 
-  const recentPaymentsResult = await db.query(
+  await db.query(
     `
-    SELECT DISTINCT
-      p.id,
-      p.payment_date,
-      p.method,
-      p.reference_no,
-      p.amount,
-      c.company AS customer_company
-    FROM portal_payments p
-    JOIN portal_payment_allocations pa
-      ON pa.payment_id = p.id
-    JOIN portal_batches b
-      ON b.id = pa.batch_id
-    JOIN portal_customers c
-      ON c.id = b.customer_id
-    WHERE c.dealer_id = $1
-    ORDER BY p.payment_date DESC, p.id DESC
-    LIMIT 10
+    UPDATE portal_dealer_users
+    SET active = $1
+    WHERE dealer_id = $2
     `,
-    [dealerId]
+    [portalEnabled, id]
   );
 
-  return {
-    summary: summaryResult.rows[0] || null,
-    recent_batches: recentBatchesResult.rows,
-    recent_shipments: recentShipmentsResult.rows,
-    recent_payments: recentPaymentsResult.rows,
-  };
+  return result.rows[0];
+}
+
+async function resetDealerPassword(id, password) {
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  const result = await db.query(
+    `
+    UPDATE portal_dealer_users
+    SET password_hash = $1
+    WHERE dealer_id = $2
+    RETURNING dealer_id, email, active
+    `,
+    [passwordHash, id]
+  );
+
+  return result.rows[0];
 }
 
 module.exports = {
   getDealers,
-  getDealerById,
-  getDealerDashboard,
+  createDealer,
+  updateDealer,
+  updateDealerStatus,
+  resetDealerPassword,
 };

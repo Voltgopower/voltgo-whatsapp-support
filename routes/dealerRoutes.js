@@ -1,25 +1,22 @@
 const express = require("express");
 
 const router = express.Router();
-const dealerController = require("../controllers/dealerController");
+
 const authMiddleware = require("../middleware/auth.middleware");
+const dealerController = require("../controllers/dealerController");
 
 // =========================
 // Dealers
 // =========================
 
-router.get("/", dealerController.getDealers);
+router.get("/", authMiddleware, dealerController.getDealers);
 
-// Dealer 自己查看自己的 Dashboard
-router.get(
-  "/dashboard/me",
-  authMiddleware,
-  dealerController.getMyDashboard
-);
+router.post("/", authMiddleware, dealerController.createDealer);
 
-// Admin 查看指定 Dealer Dashboard
-router.get("/:id/dashboard", dealerController.getDealerDashboard);
+router.put("/:id", authMiddleware, dealerController.updateDealer);
 
-router.get("/:id", dealerController.getDealerById);
+router.patch("/:id/status", authMiddleware, dealerController.updateDealerStatus);
+
+router.patch("/:id/password", authMiddleware, dealerController.resetDealerPassword);
 
 module.exports = router;

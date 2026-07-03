@@ -1,77 +1,106 @@
-const dealerRepository = require("../repositories/dealerRepository");
+const dealerRepo = require("../repositories/dealerRepository");
 
 async function getDealers(req, res) {
   try {
-    const dealers = await dealerRepository.getDealers();
-    res.json(dealers);
+    const data = await dealerRepo.getDealers();
+    res.json(data);
   } catch (err) {
-    console.error("Get dealers failed:", err);
-
+    console.error(err);
     res.status(500).json({
-      message: "Failed to get dealers",
+      error: "Failed to load dealers",
     });
   }
 }
 
-async function getDealerById(req, res) {
+async function createDealer(req, res) {
   try {
-    const { id } = req.params;
+    const data = await dealerRepo.createDealer(req.body);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: "Failed to create dealer",
+    });
+  }
+}
 
-    const dealer = await dealerRepository.getDealerById(id);
+async function updateDealer(req, res) {
+  try {
+    const data = await dealerRepo.updateDealer(req.params.id, req.body);
 
-    if (!dealer) {
+    if (!data) {
       return res.status(404).json({
-        message: "Dealer not found",
+        error: "Dealer not found",
       });
     }
 
-    res.json(dealer);
+    res.json(data);
   } catch (err) {
-    console.error("Get dealer by id failed:", err);
-
+    console.error(err);
     res.status(500).json({
-      message: "Failed to get dealer",
+      error: "Failed to update dealer",
     });
   }
 }
 
-async function getDealerDashboard(req, res) {
+async function updateDealerStatus(req, res) {
   try {
-    const { id } = req.params;
+    const data = await dealerRepo.updateDealerStatus(
+      req.params.id,
+      Boolean(req.body.portal_enabled)
+    );
 
-    const dashboard = await dealerRepository.getDealerDashboard(id);
-
-    if (!dashboard.summary) {
+    if (!data) {
       return res.status(404).json({
-        message: "Dealer not found",
+        error: "Dealer not found",
       });
     }
 
-    res.json(dashboard);
+    res.json(data);
   } catch (err) {
-    console.error("Get dealer dashboard failed:", err);
-
+    console.error(err);
     res.status(500).json({
-      message: "Failed to get dealer dashboard",
+      error: "Failed to update dealer status",
     });
   }
 }
-async function getMyDashboard(req, res) {
+
+async function resetDealerPassword(req, res) {
   try {
-    req.params.id = req.user.dealer_id;
+    if (!req.body.password) {
+      return res.status(400).json({
+        error: "Password is required",
+      });
+    }
 
-    return getDealerDashboard(req, res);
+    const data = await dealerRepo.resetDealerPassword(
+      req.params.id,
+      req.body.password
+    );
+
+    if (!data) {
+      return res.status(404).json({
+        error: "Dealer user not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      dealer_id: data.dealer_id,
+      email: data.email,
+    });
   } catch (err) {
-    console.error("Get my dealer dashboard failed:", err);
-
+    console.error(err);
     res.status(500).json({
-      message: "Failed to get dealer dashboard",
+      error: "Failed to reset dealer password",
     });
   }
 }
+
 module.exports = {
   getDealers,
-  getDealerById,
-  getDealerDashboard,
-  getMyDashboard,
+  createDealer,
+  updateDealer,
+  updateDealerStatus,
+  resetDealerPassword,
 };
