@@ -417,6 +417,141 @@ async function exportCustomerStatement(req, res) {
     });
   }
 }
+async function exportDealerStatementExcel(req, res) {
+  try {
+    const { dealer_id, start_date, end_date } = req.query;
+
+    if (!dealer_id || !start_date || !end_date) {
+      return res.status(400).json({
+        message: "dealer_id, start_date and end_date are required",
+      });
+    }
+
+    const statement = await portalRepository.getDealerStatement({
+      dealer_id,
+      start_date,
+      end_date,
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Voltgo Portal";
+    workbook.created = new Date();
+
+    const summary = statement.summary || {};
+    const dealerName =
+      summary.company || summary.contact_name || `Dealer_${dealer_id}`;
+
+    addSheet(
+      workbook,
+      "Statement Summary",
+      [
+        { header: "Item", key: "item" },
+        { header: "Value", key: "value" },
+      ],
+      [
+        { item: "Dealer", value: dealerName },
+        { item: "Dealer Code", value: summary.dealer_code || "" },
+        { item: "Contact", value: summary.contact_name || "" },
+        { item: "Email", value: summary.email || "" },
+        { item: "Statement Period", value: `${start_date} to ${end_date}` },
+        { item: "Generated At", value: new Date().toISOString() },
+        { item: "Currency", value: "USD" },
+        { item: "Invoice Amount", value: formatMoney(summary.invoice_amount) },
+        { item: "Received Amount", value: formatMoney(summary.received_amount) },
+        { item: "Outstanding Amount", value: formatMoney(summary.outstanding_amount) },
+        { item: "Batch Count", value: Number(summary.batch_count || 0) },
+        { item: "Allocation Count", value: Number(summary.allocation_count || 0) },
+      ]
+    );
+
+    addSheet(
+      workbook,
+      "Batch Detail",
+      [
+        { header: "Batch No", key: "batch_no" },
+        { header: "Shipment Date", key: "shipment_date" },
+        { header: "Invoice Amount", key: "invoice_amount" },
+        { header: "Received Amount", key: "received_amount" },
+        { header: "Balance", key: "balance" },
+        { header: "Status", key: "status" },
+      ],
+      statement.batch_details.map((item) => ({
+        batch_no: item.batch_no || "",
+        shipment_date: formatDate(item.shipment_date),
+        invoice_amount: formatMoney(item.invoice_amount),
+        received_amount: formatMoney(item.received_amount),
+        balance: formatMoney(item.balance),
+        status: item.status || "",
+      }))
+    );
+
+    addSheet(
+      workbook,
+      "Shipment Detail",
+      [
+        { header: "Shipment No", key: "shipment_no" },
+        { header: "Batch No", key: "batch_no" },
+        { header: "Carrier", key: "carrier" },
+        { header: "Tracking No", key: "tracking_no" },
+        { header: "Status", key: "status" },
+        { header: "ETD", key: "etd" },
+        { header: "ETA", key: "eta" },
+        { header: "Delivered At", key: "delivered_at" },
+      ],
+      statement.shipment_details.map((item) => ({
+        shipment_no: item.shipment_no || "",
+        batch_no: item.batch_no || "",
+        carrier: item.carrier || "",
+        tracking_no: item.tracking_no || "",
+        status: item.status || "",
+        etd: formatDate(item.etd),
+        eta: formatDate(item.eta),
+        delivered_at: formatDate(item.delivered_at),
+      }))
+    );
+
+    addSheet(
+      workbook,
+      "Payment Detail",
+      [
+        { header: "Payment Date", key: "payment_date" },
+        { header: "Method", key: "method" },
+        { header: "Reference No", key: "reference_no" },
+        { header: "Amount", key: "amount" },
+        { header: "Notes", key: "notes" },
+      ],
+      statement.payment_details.map((item) => ({
+        payment_date: formatDate(item.payment_date),
+        method: item.method || "",
+        reference_no: item.reference_no || "",
+        amount: formatMoney(item.amount),
+        notes: item.notes || "",
+      }))
+    );
+
+    const safeDealerName = String(dealerName)
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 40);
+
+    const fileName = `Dealer_Statement_${safeDealerName}_${start_date}_to_${end_date}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("Export dealer statement Excel failed:", err);
+
+    res.status(500).json({
+      message: "Failed to export dealer statement Excel",
+    });
+  }
+}
 async function exportDealerStatement(req, res) {
   try {
     const { dealer_id, start_date, end_date } = req.query;
@@ -447,4 +582,5 @@ module.exports = {
   exportSalesReport,
   exportCustomerStatement,
   exportDealerStatement,
+  exportDealerStatementExcel,
 };
