@@ -60,12 +60,12 @@ async function getBatches({ isDealer = false, dealerId = null } = {}) {
       c.name AS customer_name,
       c.company AS customer_company,
 
-      COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
+      COALESCESUM(p.amount), 0) AS received_amount,
       (b.invoice_amount - COALESCE(SUM(pa.allocated_amount), 0)) AS balance
     FROM portal_batches b
     LEFT JOIN portal_dealers d ON d.id = b.dealer_id
     LEFT JOIN portal_customers c ON c.id = b.customer_id
-    LEFT JOIN portal_payment_allocations pa ON pa.batch_id = b.id
+    LEFT JOIN portal_payments p ON p.batch_id = b.id
     ${whereSql}
     GROUP BY b.id, d.id, d.dealer_code, d.company, d.contact_name, d.email, c.name, c.company
     ORDER BY b.id DESC
@@ -318,7 +318,7 @@ async function getBatchById(batchId) {
       c.company AS customer_company,
       c.email AS customer_email,
       c.phone AS customer_phone,
-      COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
+      COALESCESUM(p.amount), 0) AS received_amount,
       (b.invoice_amount - COALESCE(SUM(pa.allocated_amount), 0)) AS balance
     FROM portal_batches b
     LEFT JOIN portal_customers c ON c.id = b.customer_id
@@ -651,7 +651,7 @@ async function getSalesReport({ start_date, end_date }) {
     `
     SELECT
       COALESCE(SUM(b.invoice_amount), 0) AS total_invoice,
-      COALESCE(SUM(pa.received_amount), 0) AS total_received,
+      COALESCESUM(p.amount), 0) AS total_received,
       COALESCE(SUM(b.invoice_amount - COALESCE(pa.received_amount, 0)), 0) AS total_outstanding,
       COUNT(DISTINCT b.id) AS batch_count,
       COUNT(DISTINCT b.customer_id) AS customer_count
@@ -794,7 +794,7 @@ async function getCustomerStatement({ customer_id, start_date, end_date }) {
       c.name AS customer_name,
       c.company AS customer_company,
       COALESCE(SUM(b.invoice_amount), 0) AS invoice_amount,
-      COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
+      COALESCESUM(p.amount), 0) AS received_amount,
       COALESCE(SUM(b.invoice_amount), 0) - COALESCE(SUM(pa.allocated_amount), 0) AS outstanding_amount,
       COUNT(DISTINCT b.id) AS batch_count,
       COUNT(DISTINCT pa.id) AS allocation_count
