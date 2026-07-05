@@ -133,22 +133,39 @@ async function getPayments() {
 }
 
 async function createPayment(data) {
+  let dealerId = data.dealer_id || null;
+
+  if (!dealerId && data.batch_id) {
+    const batchResult = await db.query(
+      `
+      SELECT dealer_id
+      FROM portal_batches
+      WHERE id = $1
+      `,
+      [data.batch_id]
+    );
+
+    dealerId = batchResult.rows[0]?.dealer_id || null;
+  }
+
   const result = await db.query(
     `
     INSERT INTO portal_payments
     (
       customer_id,
+      dealer_id,
       payment_date,
       amount,
       method,
       reference_no,
       notes
     )
-    VALUES ($1,$2,$3,$4,$5,$6)
+    VALUES ($1,$2,$3,$4,$5,$6,$7)
     RETURNING *
     `,
     [
-      data.customer_id,
+      data.customer_id || null,
+      dealerId,
       data.payment_date || null,
       data.amount || 0,
       data.method || null,
@@ -1262,16 +1279,18 @@ async function updatePayment(id, data) {
     UPDATE portal_payments
     SET
       customer_id = $1,
-      payment_date = $2,
-      amount = $3,
-      method = $4,
-      reference_no = $5,
-      notes = $6
-    WHERE id = $7
+      dealer_id = $2,
+      payment_date = $3,
+      amount = $4,
+      method = $5,
+      reference_no = $6,
+      notes = $7
+    WHERE id = $8
     RETURNING *
     `,
     [
       data.customer_id || null,
+      data.dealer_id || null,
       data.payment_date || null,
       data.amount || 0,
       data.method || null,
