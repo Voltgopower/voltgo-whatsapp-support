@@ -1297,7 +1297,7 @@ async function updatePayment(id, data) {
     UPDATE portal_payments
     SET
       customer_id = $1,
-      dealer_id = $2,
+      dealer_id = COALESCE($2, dealer_id),
       payment_date = $3,
       amount = $4,
       method = $5,
