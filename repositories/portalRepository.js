@@ -292,22 +292,40 @@ async function getBatchById(batchId) {
     [batchId]
   );
 
-  const allocationsResult = await db.query(
-    `
-    SELECT
-      pa.*,
-      p.payment_date,
-      p.amount AS payment_amount,
-      p.method,
-      p.reference_no,
-      p.notes AS payment_notes
-    FROM portal_payment_allocations pa
-    LEFT JOIN portal_payments p ON p.id = pa.payment_id
-    WHERE pa.batch_id = $1
-    ORDER BY pa.id ASC
-    `,
-    [batchId]
-  );
+  const paymentsResult = await db.query(
+  `
+  SELECT
+      p.*,
+
+      COALESCE(
+          SUM(pa.allocated_amount),
+          0
+      ) AS allocated_amount,
+
+      (
+          p.amount
+          -
+          COALESCE(SUM(pa.allocated_amount),0)
+      ) AS balance
+
+  FROM portal_payments p
+
+  LEFT JOIN portal_payment_allocations pa
+      ON pa.payment_id = p.id
+
+  WHERE
+      p.dealer_id = (
+          SELECT dealer_id
+          FROM portal_batches
+          WHERE id = $1
+      )
+
+  GROUP BY p.id
+
+  ORDER BY p.payment_date DESC, p.id DESC
+  `,
+  [batchId]
+);
 
   return {
     ...batch,
@@ -319,7 +337,7 @@ async function getBatchById(batchId) {
       phone: batch.customer_phone,
     },
     items: itemsResult.rows,
-    payments: allocationsResult.rows,
+    payments: paymentsResult.rows,
   };
 }
 async function getDocuments(filters = {}) {
