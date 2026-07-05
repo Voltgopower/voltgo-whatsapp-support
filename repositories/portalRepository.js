@@ -565,8 +565,17 @@ async function getShipmentAllocations(shipmentId) {
 
   return result.rows[0];
 }
-async function getAvailableAllocations() {
-  const result = await db.query(`
+async function getAvailableAllocations({ batchId } = {}) {
+  const params = [];
+  let whereSql = "WHERE 1=1";
+
+  if (batchId) {
+    params.push(batchId);
+    whereSql += ` AND pa.batch_id = $${params.length}`;
+  }
+
+  const result = await db.query(
+    `
     SELECT
       pa.id,
       pa.allocated_amount,
@@ -577,11 +586,11 @@ async function getAvailableAllocations() {
     FROM portal_payment_allocations pa
     JOIN portal_payments p ON p.id = pa.payment_id
     LEFT JOIN portal_batches b ON b.id = pa.batch_id
-    LEFT JOIN portal_shipment_allocations sa
-      ON sa.allocation_id = pa.id
-    WHERE sa.id IS NULL
+    ${whereSql}
     ORDER BY pa.id DESC
-  `);
+    `,
+    params
+  );
 
   return result.rows;
 }

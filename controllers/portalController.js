@@ -241,7 +241,9 @@ async function createShipmentAllocation(req, res) {
 
 async function getAvailableAllocations(req, res) {
   try {
-    const data = await repo.getAvailableAllocations();
+    const data = await repo.getAvailableAllocations({
+      batchId: req.query.batch_id,
+    });
     res.json(data);
   } catch (err) {
     console.error(err);
