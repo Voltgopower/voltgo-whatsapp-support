@@ -50,15 +50,24 @@ async function getBatches({ isDealer = false, dealerId = null } = {}) {
     `
     SELECT
       b.*,
+
+      d.id AS dealer_id,
+      d.dealer_code,
+      d.company AS dealer_company,
+      d.contact_name AS dealer_contact_name,
+      d.email AS dealer_email,
+
       c.name AS customer_name,
       c.company AS customer_company,
+
       COALESCE(SUM(pa.allocated_amount), 0) AS received_amount,
       (b.invoice_amount - COALESCE(SUM(pa.allocated_amount), 0)) AS balance
     FROM portal_batches b
+    LEFT JOIN portal_dealers d ON d.id = b.dealer_id
     LEFT JOIN portal_customers c ON c.id = b.customer_id
     LEFT JOIN portal_payment_allocations pa ON pa.batch_id = b.id
     ${whereSql}
-    GROUP BY b.id, c.name, c.company
+    GROUP BY b.id, d.id, d.dealer_code, d.company, d.contact_name, d.email, c.name, c.company
     ORDER BY b.id DESC
     `,
     params
@@ -68,12 +77,14 @@ async function getBatches({ isDealer = false, dealerId = null } = {}) {
 }
 async function createBatch(data) {
   console.log("createBatch data =", data);
+
   const result = await db.query(
     `
     INSERT INTO portal_batches
     (
       batch_no,
       customer_id,
+      dealer_id,
       dealer_name,
       po_number,
       reference,
@@ -83,12 +94,13 @@ async function createBatch(data) {
       status,
       notes
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     RETURNING *
     `,
     [
       data.batch_no,
       data.customer_id || null,
+      data.dealer_id || null,
       data.dealer_name || null,
       data.po_number || null,
       data.reference || null,
@@ -1174,16 +1186,18 @@ async function updateBatch(id, data) {
     UPDATE portal_batches
     SET
       batch_no = $1,
-      dealer_name = $2,
-      invoice_amount = $3,
-      status = $4,
-      shipment_date = $5
-    WHERE id = $6
+      dealer_id = $2,
+      dealer_name = $3,
+      invoice_amount = $4,
+      status = $5,
+      shipment_date = $6
+    WHERE id = $7
     RETURNING *
     `,
     [
       data.batch_no,
-      data.customer_name || data.dealer_name || null,
+      data.dealer_id || null,
+      data.dealer_name || data.customer_name || null,
       data.invoice_amount || 0,
       data.status || "draft",
       data.shipment_date || null,
