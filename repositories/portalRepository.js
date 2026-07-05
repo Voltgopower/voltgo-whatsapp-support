@@ -575,8 +575,11 @@ async function getAvailableAllocations() {
       p.payment_date,
       b.batch_no
     FROM portal_payment_allocations pa
-    LEFT JOIN portal_payments p ON p.id = pa.payment_id
+    JOIN portal_payments p ON p.id = pa.payment_id
     LEFT JOIN portal_batches b ON b.id = pa.batch_id
+    LEFT JOIN portal_shipment_allocations sa
+      ON sa.allocation_id = pa.id
+    WHERE sa.id IS NULL
     ORDER BY pa.id DESC
   `);
 
