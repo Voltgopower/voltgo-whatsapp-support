@@ -424,12 +424,31 @@ async function getShipments(batchId) {
   );
 
   return result.rows;
-}async function createShipment(data) {
+}
+async function createShipment(data) {
+  const batchResult = await db.query(
+    `
+    SELECT dealer_id
+    FROM portal_batches
+    WHERE id = $1
+    `,
+    [data.batch_id]
+  );
+
+  const batch = batchResult.rows[0];
+
+  if (!batch) {
+    const err = new Error("Batch not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
   const { rows } = await db.query(
     `
     INSERT INTO portal_shipments
     (
       batch_id,
+      dealer_id,
       shipment_no,
       carrier,
       tracking_no,
@@ -443,12 +462,13 @@ async function getShipments(batchId) {
     )
     VALUES
     (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
     )
     RETURNING *
     `,
     [
       data.batch_id,
+      batch.dealer_id || null,
       data.shipment_no,
       data.carrier,
       data.tracking_no,
