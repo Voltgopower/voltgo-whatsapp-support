@@ -1372,43 +1372,52 @@ async function updatePayment(id, data) {
 }
 
 async function deletePayment(id) {
-  const shipmentLinkCheck = await db.query(
-    `
-    SELECT COUNT(*)::int AS count
-    FROM portal_shipment_allocations sa
-    JOIN portal_payment_allocations pa
-      ON pa.id = sa.allocation_id
-    WHERE pa.payment_id = $1
-    `,
-    [id]
-  );
+  await db.query("BEGIN");
 
-  if (shipmentLinkCheck.rows[0].count > 0) {
-    const err = new Error(
-      "Payment is linked to shipments. Please unlink it from shipments before deleting."
+  try {
+    const shipmentLinkCheck = await db.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM portal_shipment_allocations sa
+      JOIN portal_payment_allocations pa
+        ON pa.id = sa.allocation_id
+      WHERE pa.payment_id = $1
+      `,
+      [id]
     );
-    err.statusCode = 400;
+
+    if (shipmentLinkCheck.rows[0].count > 0) {
+      const err = new Error(
+        "Payment is linked to shipments. Please unlink it from shipments before deleting."
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    await db.query(
+      `
+      DELETE FROM portal_payment_allocations
+      WHERE payment_id = $1
+      `,
+      [id]
+    );
+
+    const result = await db.query(
+      `
+      DELETE FROM portal_payments
+      WHERE id = $1
+      RETURNING *
+      `,
+      [id]
+    );
+
+    await db.query("COMMIT");
+
+    return result.rows[0];
+  } catch (err) {
+    await db.query("ROLLBACK");
     throw err;
   }
-
-  await db.query(
-    `
-    DELETE FROM portal_payment_allocations
-    WHERE payment_id = $1
-    `,
-    [id]
-  );
-
-  const result = await db.query(
-    `
-    DELETE FROM portal_payments
-    WHERE id = $1
-    RETURNING *
-    `,
-    [id]
-  );
-
-  return result.rows[0];
 }
 async function deleteShipment(id) {
   const itemCheck = await db.query(
