@@ -133,39 +133,42 @@ async function getPayments() {
 }
 
 async function createPayment(data) {
+  const batchId = data.batch_id || null;
   let dealerId = data.dealer_id || null;
 
-  if (!dealerId && data.batch_id) {
+  if (!dealerId && batchId) {
     const batchResult = await db.query(
       `
       SELECT dealer_id
       FROM portal_batches
       WHERE id = $1
       `,
-      [data.batch_id]
+      [batchId]
     );
 
     dealerId = batchResult.rows[0]?.dealer_id || null;
   }
 
-  const result = await db.query(
+  const paymentResult = await db.query(
     `
     INSERT INTO portal_payments
     (
       customer_id,
       dealer_id,
+      batch_id,
       payment_date,
       amount,
       method,
       reference_no,
       notes
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
     RETURNING *
     `,
     [
       data.customer_id || null,
       dealerId,
+      batchId,
       data.payment_date || null,
       data.amount || 0,
       data.method || null,
@@ -174,7 +177,28 @@ async function createPayment(data) {
     ]
   );
 
-  return result.rows[0];
+  const payment = paymentResult.rows[0];
+
+  if (batchId) {
+    await db.query(
+      `
+      INSERT INTO portal_payment_allocations
+      (
+        payment_id,
+        batch_id,
+        allocated_amount
+      )
+      VALUES ($1,$2,$3)
+      `,
+      [
+        payment.id,
+        batchId,
+        data.amount || 0,
+      ]
+    );
+  }
+
+  return payment;
 }
 
 async function getAllocations() {
@@ -213,6 +237,35 @@ async function createAllocation(data) {
       data.batch_id,
       data.allocated_amount || 0,
     ]
+  );
+
+  return result.rows[0];
+}
+async function deleteAllocation(id) {
+  const linkCheck = await db.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM portal_shipment_allocations
+    WHERE allocation_id = $1
+    `,
+    [id]
+  );
+
+  if (linkCheck.rows[0].count > 0) {
+    const err = new Error(
+      "Allocation is linked to shipments. Please unlink it from shipments first."
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await db.query(
+    `
+    DELETE FROM portal_payment_allocations
+    WHERE id = $1
+    RETURNING *
+    `,
+    [id]
   );
 
   return result.rows[0];
@@ -292,40 +345,23 @@ async function getBatchById(batchId) {
     [batchId]
   );
 
-  const paymentsResult = await db.query(
-  `
-  SELECT
+    const paymentsResult = await db.query(
+    `
+    SELECT
       p.*,
-
-      COALESCE(
-          SUM(pa.allocated_amount),
-          0
-      ) AS allocated_amount,
-
+      COALESCE(SUM(pa.allocated_amount), 0) AS allocated_amount,
       (
-          p.amount
-          -
-          COALESCE(SUM(pa.allocated_amount),0)
+        p.amount - COALESCE(SUM(pa.allocated_amount), 0)
       ) AS balance
-
-  FROM portal_payments p
-
-  LEFT JOIN portal_payment_allocations pa
+    FROM portal_payments p
+    LEFT JOIN portal_payment_allocations pa
       ON pa.payment_id = p.id
-
-  WHERE
-      p.dealer_id = (
-          SELECT dealer_id
-          FROM portal_batches
-          WHERE id = $1
-      )
-
-  GROUP BY p.id
-
-  ORDER BY p.payment_date DESC, p.id DESC
-  `,
-  [batchId]
-);
+    WHERE p.batch_id = $1
+    GROUP BY p.id
+    ORDER BY p.payment_date DESC, p.id DESC
+    `,
+    [batchId]
+  );
 
   return {
     ...batch,
@@ -578,6 +614,8 @@ async function getAvailableAllocations({ batchId } = {}) {
     `
     SELECT
       pa.id,
+      pa.payment_id,
+      pa.batch_id,
       pa.allocated_amount,
       p.method,
       p.reference_no,
@@ -1334,20 +1372,32 @@ async function updatePayment(id, data) {
 }
 
 async function deletePayment(id) {
-  const allocationCheck = await db.query(
+  const shipmentLinkCheck = await db.query(
     `
     SELECT COUNT(*)::int AS count
-    FROM portal_payment_allocations
-    WHERE payment_id = $1
+    FROM portal_shipment_allocations sa
+    JOIN portal_payment_allocations pa
+      ON pa.id = sa.allocation_id
+    WHERE pa.payment_id = $1
     `,
     [id]
   );
 
-  if (allocationCheck.rows[0].count > 0) {
-    const err = new Error("Payment has allocations and cannot be deleted");
+  if (shipmentLinkCheck.rows[0].count > 0) {
+    const err = new Error(
+      "Payment is linked to shipments. Please unlink it from shipments before deleting."
+    );
     err.statusCode = 400;
     throw err;
   }
+
+  await db.query(
+    `
+    DELETE FROM portal_payment_allocations
+    WHERE payment_id = $1
+    `,
+    [id]
+  );
 
   const result = await db.query(
     `
@@ -1461,4 +1511,5 @@ module.exports = {
   deleteShipment,
   deleteDocument,
   getDealerStatement,
+  deleteAllocation,
  };

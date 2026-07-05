@@ -95,6 +95,17 @@ async function createAllocation(req, res) {
     res.status(500).json({ error: "Failed to create allocation" });
   }
 }
+async function deleteAllocation(req, res) {
+  try {
+    const data = await repo.deleteAllocation(req.params.id);
+    res.json(data || { success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to delete allocation",
+    });
+  }
+}
 async function getBatchItems(req, res) {
   try {
     const data = await repo.getBatchItems(req.params.batchId);
@@ -455,4 +466,5 @@ module.exports = {
   deletePayment,
   deleteShipment,
   deleteDocument,
+  deleteAllocation,
 };

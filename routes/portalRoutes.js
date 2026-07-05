@@ -104,6 +104,13 @@ router.delete("/payments/:id", authMiddleware, controller.deletePayment);
 router.get("/allocations", authMiddleware, controller.getAllocations);
 router.post("/allocations", authMiddleware, controller.createAllocation);
 
+// 新增
+router.delete(
+  "/allocations/:id",
+  authMiddleware,
+  controller.deleteAllocation
+);
+
 router.get(
   "/available-allocations",
   authMiddleware,
