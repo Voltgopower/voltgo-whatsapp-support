@@ -345,16 +345,7 @@ async function getBatchById(batchId) {
     return null;
   }
 
-  const itemsResult = await db.query(
-    `
-    SELECT *
-    FROM portal_batch_items
-    WHERE batch_id = $1
-    ORDER BY id ASC
-    `,
-    [batchId]
-  );
-
+  
   const paymentsResult = await db.query(
     `
     SELECT
@@ -372,19 +363,46 @@ async function getBatchById(batchId) {
     `,
     [batchId]
   );
-
+const documentsResult = await db.query(
+`
+SELECT *
+FROM portal_documents
+WHERE related_type='batch'
+AND related_id=$1
+ORDER BY id DESC
+`,
+[batchId]
+);
+const shipmentsResult = await db.query(
+`
+SELECT *
+FROM portal_shipments
+WHERE batch_id=$1
+ORDER BY id
+`,
+[batchId]
+);
+const productSummary =
+      await getBatchProductSummary(batchId);
   return {
-    ...batch,
-    customer: {
-      id: batch.customer_id,
-      name: batch.customer_name,
-      company: batch.customer_company,
-      email: batch.customer_email,
-      phone: batch.customer_phone,
-    },
-    items: itemsResult.rows,
-    payments: paymentsResult.rows,
-  };
+  ...batch,
+
+  customer: {
+    id: batch.customer_id,
+    name: batch.customer_name,
+    company: batch.customer_company,
+    email: batch.customer_email,
+    phone: batch.customer_phone,
+  },
+
+  shipments: shipmentsResult.rows,
+
+  products: productSummary,
+
+  documents: documentsResult.rows,
+
+  payments: paymentsResult.rows,
+};
 }
 async function getDocuments(filters = {}) {
   let sql = `
