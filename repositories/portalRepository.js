@@ -822,15 +822,17 @@ async function getCustomerStatement({ customer_id, start_date, end_date }) {
       c.company AS customer_company,
       COALESCE(SUM(b.invoice_amount), 0) AS invoice_amount,
       COALESCE(SUM(pay.received_amount), 0) AS received_amount,
-      COALESCE(SUM(COALESCE(b.invoice_amount, 0) - COALESCE(pay.received_amount, 0)), 0) AS outstanding_amount,
-      COUNT(DISTINCT b.id) AS batch_count,
-      COUNT(DISTINCT p.id) AS allocation_count
+      COALESCE(
+        SUM(
+          COALESCE(b.invoice_amount, 0) - COALESCE(pay.received_amount, 0)
+        ),
+        0
+      ) AS outstanding_amount,
+      COUNT(DISTINCT b.id) AS batch_count
     FROM portal_customers c
     LEFT JOIN portal_batches b
       ON b.customer_id = c.id
       AND b.shipment_date BETWEEN $2 AND $3
-    LEFT JOIN portal_payments p
-      ON p.batch_id = b.id
     LEFT JOIN (
       SELECT
         batch_id,
@@ -958,15 +960,17 @@ async function getDealerStatement({ dealer_id, start_date, end_date }) {
       d.email,
       COALESCE(SUM(b.invoice_amount), 0) AS invoice_amount,
       COALESCE(SUM(pay.received_amount), 0) AS received_amount,
-      COALESCE(SUM(COALESCE(b.invoice_amount, 0) - COALESCE(pay.received_amount, 0)), 0) AS outstanding_amount,
-      COUNT(DISTINCT b.id) AS batch_count,
-      COUNT(DISTINCT p.id) AS allocation_count
+      COALESCE(
+        SUM(
+          COALESCE(b.invoice_amount, 0) - COALESCE(pay.received_amount, 0)
+        ),
+        0
+      ) AS outstanding_amount,
+      COUNT(DISTINCT b.id) AS batch_count
     FROM portal_dealers d
     LEFT JOIN portal_batches b
       ON b.dealer_id = d.id
       AND b.shipment_date BETWEEN $2 AND $3
-    LEFT JOIN portal_payments p
-      ON p.batch_id = b.id
     LEFT JOIN (
       SELECT
         batch_id,
