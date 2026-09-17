@@ -15,52 +15,8 @@ const {
 const { uploadToR2, bucket } = require("../config/r2");
 const { buildObjectKey } = require("../utils/object-key.util");
 const mediaRepository = require("../repositories/media.repository");
-
-function getInboundMessage(payload) {
-  const entry = payload?.entry?.[0];
-  const change = entry?.changes?.[0];
-  const value = change?.value;
-
-  const contact = value?.contacts?.[0];
-  const message = value?.messages?.[0];
-
-  if (!message) return null;
-
-  let text = "[non-text message]";
-
-  if (message?.text?.body) {
-    text = message.text.body;
-  } else if (message?.type) {
-    text = `[${message.type} message]`;
-  }
-
-  return {
-    phone: message.from,
-    profileName: contact?.profile?.name || message.from,
-    waMessageId: message.id,
-    text,
-    sentAt: message?.timestamp
-      ? new Date(Number(message.timestamp) * 1000)
-      : new Date(),
-    rawPayload: payload,
-    rawMessage: message,
-  };
-}
-
-function getStatusUpdate(payload) {
-  const entry = payload?.entry?.[0];
-  const change = entry?.changes?.[0];
-  const value = change?.value;
-  const status = value?.statuses?.[0];
-
-  if (!status) return null;
-
-  return {
-    waMessageId: status.id,
-    status: status.status,
-    rawPayload: payload,
-  };
-}
+const { getWebhookEvents } = require("../utils/webhookParser");
+const { getAutoAssignUserId } = require("../utils/autoAssignment");
 
 function normalizeWebhookStatus(status) {
   const raw = String(status || "").toLowerCase();
@@ -358,192 +314,164 @@ async function verifyWebhook(req, res) {
   return res.sendStatus(403);
 }
 
-async function receiveWebhook(req, res) {
+async function processStatusUpdate(statusUpdate) {
+  console.log("📥 webhook status received:", statusUpdate);
+
+  const normalizedStatus = normalizeWebhookStatus(statusUpdate.status);
+
+  const existingMessage = await messageModel.findByExternalMessageId(
+    statusUpdate.waMessageId
+  );
+
+  if (!existingMessage) {
+    console.log(
+      "⚠ status update skipped: message not found",
+      statusUpdate.waMessageId
+    );
+    return { processed: false, reason: "message_not_found" };
+  }
+
+  if (shouldSkipStatusUpdate(existingMessage.status, normalizedStatus)) {
+    console.log("⏭ skip webhook status update", {
+      waMessageId: statusUpdate.waMessageId,
+      currentStatus: existingMessage.status,
+      incomingStatus: normalizedStatus,
+    });
+    return { processed: false, reason: "stale_or_duplicate_status" };
+  }
+
+  const updatedMessage = await messageModel.updateStatusByWaMessageId(
+    statusUpdate.waMessageId,
+    normalizedStatus,
+    statusUpdate.rawPayload
+  );
+
+  if (!updatedMessage) {
+    console.log(
+      "⚠ status update returned no message",
+      statusUpdate.waMessageId
+    );
+    return { processed: false, reason: "update_returned_no_message" };
+  }
+
+  console.log("✅ webhook status updated", {
+    messageId: updatedMessage.id,
+    waMessageId: statusUpdate.waMessageId,
+    status: updatedMessage.status,
+  });
+
+  getIO().emit("message:status", {
+    waMessageId: statusUpdate.waMessageId,
+    status: updatedMessage.status,
+    messageId: updatedMessage.id,
+  });
+
+  await emitConversationAfterStatusUpdate(updatedMessage);
+
+  return { processed: true };
+}
+
+async function processInboundMessage(incoming) {
+  console.log("Parsed inbound message:", incoming);
+
+  const existingMessage = await messageModel.findByExternalMessageId(
+    incoming.waMessageId
+  );
+
+  if (existingMessage) {
+    console.log("duplicate inbound message skipped:", incoming.waMessageId);
+    return { processed: false, reason: "duplicate_message" };
+  }
+
+  let customer = await customerModel.findByPhone(incoming.phone);
+
+  if (!customer) {
+    customer = await customerModel.createCustomer({
+      phone: incoming.phone,
+      profileName: incoming.profileName,
+    });
+  } else {
+    customer = await customerModel.touchCustomer(
+      customer.id,
+      incoming.profileName
+    );
+  }
+
+  let conversation = await conversationModel.findOpenByCustomerId(customer.id);
+
+  if (!conversation) {
+    conversation = await conversationModel.createConversation({
+      customerId: customer.id,
+      lastMessageAt: incoming.sentAt,
+      lastMessagePreview: incoming.text,
+    });
+  }
+
+  const message = await messageModel.createMessage({
+    conversationId: conversation.id,
+    customerId: customer.id,
+    waMessageId: incoming.waMessageId,
+    phone: incoming.phone,
+    text: incoming.text,
+    direction: "inbound",
+    status: "delivered",
+    rawPayload: incoming.rawPayload,
+    sentAt: incoming.sentAt,
+  });
+
   try {
-    saveWebhookReceived(req.body);
-    console.log("=== webhook received ===");
-    console.log(JSON.stringify(req.body, null, 2));
+    await persistInboundMedia({
+      rawMessage: incoming.rawMessage,
+      conversation,
+      customer,
+      message,
+    });
+  } catch (mediaErr) {
+    console.error("persistInboundMedia error:", mediaErr);
+  }
 
-    const statusUpdate = getStatusUpdate(req.body);
+  conversation = await conversationModel.updateConversationAfterInbound({
+    conversationId: conversation.id,
+    lastMessageId: message.id,
+    lastMessageAt: incoming.sentAt,
+    preview: incoming.text,
+  });
 
-    if (statusUpdate) {
-      try {
-        console.log("📥 webhook status received:", statusUpdate);
+  try {
+    const autoTags = detectTagsFromText(incoming.text);
 
-        const normalizedStatus = normalizeWebhookStatus(statusUpdate.status);
+    if (autoTags.length > 0) {
+      console.log("Auto tags detected:", autoTags);
 
-        const existingMessage = await messageModel.findByExternalMessageId(
-          statusUpdate.waMessageId
-        );
-
-        if (!existingMessage) {
-          console.log(
-            "⚠ status update skipped: message not found",
-            statusUpdate.waMessageId
-          );
-          return res.sendStatus(200);
-        }
-
-        if (
-          shouldSkipStatusUpdate(existingMessage.status, normalizedStatus)
-        ) {
-          console.log("⏭ skip webhook status update", {
-            waMessageId: statusUpdate.waMessageId,
-            currentStatus: existingMessage.status,
-            incomingStatus: normalizedStatus,
-          });
-          return res.sendStatus(200);
-        }
-
-        const updatedMessage = await messageModel.updateStatusByWaMessageId(
-          statusUpdate.waMessageId,
-          normalizedStatus,
-          statusUpdate.rawPayload
-        );
-
-        if (updatedMessage) {
-          console.log("✅ webhook status updated", {
-            messageId: updatedMessage.id,
-            waMessageId: statusUpdate.waMessageId,
-            status: updatedMessage.status,
-          });
-
-          getIO().emit("message:status", {
-            waMessageId: statusUpdate.waMessageId,
-            status: updatedMessage.status,
-            messageId: updatedMessage.id,
-          });
-
-          await emitConversationAfterStatusUpdate(updatedMessage);
-        } else {
-          console.log(
-            "⚠ status update returned no message",
-            statusUpdate.waMessageId
-          );
-        }
-
-        return res.sendStatus(200);
-      } catch (statusErr) {
-        console.error("webhook status update error:", statusErr);
-        return res.sendStatus(200);
+      for (const tag of autoTags) {
+        await customerModel.addTagToCustomer(customer.id, tag);
       }
     }
+  } catch (err) {
+    console.error("auto tag error:", err);
+  }
 
-    const incoming = getInboundMessage(req.body);
+  try {
+    console.log("=== AUTO ASSIGN START ===");
 
-    if (!incoming) {
-      console.log("Webhook ignored: no inbound message parsed");
-      return res.status(200).json({
-        success: true,
-        ignored: true,
-      });
-    }
+    const result = detectIntent(incoming.text);
+    console.log("detectIntent result =", result);
 
-    console.log("Parsed inbound message:", incoming);
-
-    const existingMessage = await messageModel.findByExternalMessageId(
-      incoming.waMessageId
+    const intent = result?.intent;
+    const latestConversation = await conversationModel.getConversationById(
+      conversation.id
     );
 
-    if (existingMessage) {
-      console.log("duplicate inbound message skipped:", incoming.waMessageId);
-      return res.sendStatus(200);
-    }
+    console.log("assigned_to BEFORE =", latestConversation?.assigned_to);
 
-    let customer = await customerModel.findByPhone(incoming.phone);
+    if (isConversationUnassigned(latestConversation)) {
+      const targetUserId = getAutoAssignUserId(intent);
 
-    if (!customer) {
-      customer = await customerModel.createCustomer({
-        phone: incoming.phone,
-        profileName: incoming.profileName,
-      });
-    } else {
-      customer = await customerModel.touchCustomer(
-        customer.id,
-        incoming.profileName
-      );
-    }
-
-    let conversation = await conversationModel.findOpenByCustomerId(customer.id);
-
-    if (!conversation) {
-      conversation = await conversationModel.createConversation({
-        customerId: customer.id,
-        lastMessageAt: incoming.sentAt,
-        lastMessagePreview: incoming.text,
-      });
-    }
-
-    const message = await messageModel.createMessage({
-      conversationId: conversation.id,
-      customerId: customer.id,
-      waMessageId: incoming.waMessageId,
-      phone: incoming.phone,
-      text: incoming.text,
-      direction: "inbound",
-      status: "delivered",
-      rawPayload: incoming.rawPayload,
-      sentAt: incoming.sentAt,
-    });
-
-    try {
-      await persistInboundMedia({
-        rawMessage: incoming.rawMessage,
-        conversation,
-        customer,
-        message,
-      });
-    } catch (mediaErr) {
-      console.error("persistInboundMedia error:", mediaErr);
-    }
-
-    conversation = await conversationModel.updateConversationAfterInbound({
-      conversationId: conversation.id,
-      lastMessageId: message.id,
-      lastMessageAt: incoming.sentAt,
-      preview: incoming.text,
-    });
-
-    try {
-      const autoTags = detectTagsFromText(incoming.text);
-
-      if (autoTags.length > 0) {
-        console.log("Auto tags detected:", autoTags);
-
-        for (const tag of autoTags) {
-          await customerModel.addTagToCustomer(customer.id, tag);
-        }
+      if (targetUserId === null) {
+        console.log("skip auto assign: unknown intent");
       }
-    } catch (err) {
-      console.error("auto tag error:", err);
-    }
 
-    try {
-      console.log("=== AUTO ASSIGN START ===");
-
-      const result = detectIntent(incoming.text);
-      console.log("detectIntent result =", result);
-
-      const intent = result?.intent;
-
-      const latestConversation = await conversationModel.getConversationById(
-        conversation.id
-      );
-
-      console.log("assigned_to BEFORE =", latestConversation?.assigned_to);
-
-      if (isConversationUnassigned(latestConversation)) {
-        let targetUserId = null;
-
-        if (intent === "support") {
-          targetUserId = 3;
-        } else if (intent === "sales") {
-          targetUserId = 2;
-        } else {
-          console.log("skip auto assign: unknown intent");
-          return;
-        }
-
+      if (targetUserId !== null) {
         const assignedConversation =
           await conversationModel.assignConversationIfUnassigned(
             conversation.id,
@@ -561,37 +489,76 @@ async function receiveWebhook(req, res) {
             "skip auto assign: already assigned by another process or manual action"
           );
         }
-      } else {
-        console.log("conversation already assigned, skip auto assign");
       }
-    } catch (err) {
-      console.error("auto assign error:", err);
+    } else {
+      console.log("conversation already assigned, skip auto assign");
     }
+  } catch (err) {
+    console.error("auto assign error:", err);
+  }
 
-    const emitConversation = await reloadConversationForEmit(
-      customer,
-      conversation.id,
-      conversation
+  const emitConversation = await reloadConversationForEmit(
+    customer,
+    conversation.id,
+    conversation
+  );
+
+  try {
+    const io = getIO();
+
+    io.emit("conversation:updated", {
+      conversation: emitConversation,
+    });
+
+    io.emit("message:new", {
+      conversationId: emitConversation.id,
+      message,
+    });
+  } catch (socketError) {
+    console.log("socket emit skipped:", socketError.message);
+  }
+
+  return { processed: true };
+}
+
+async function receiveWebhook(req, res) {
+  try {
+    saveWebhookReceived(req.body);
+    console.log("=== webhook received ===");
+    console.log(JSON.stringify(req.body, null, 2));
+
+    const events = getWebhookEvents(
+      req.body,
+      process.env.WHATSAPP_PHONE_NUMBER_ID
     );
 
-    try {
-      const io = getIO();
-
-      io.emit("conversation:updated", {
-        conversation: emitConversation,
+    if (events.length === 0) {
+      console.log("Webhook ignored: no matching events parsed");
+      return res.status(200).json({
+        success: true,
+        ignored: true,
       });
+    }
 
-      io.emit("message:new", {
-        conversationId: emitConversation.id,
-        message,
-      });
-    } catch (socketError) {
-      console.log("socket emit skipped:", socketError.message);
+    const results = [];
+
+    for (const event of events) {
+      if (event.type === "status") {
+        try {
+          results.push(await processStatusUpdate(event.data));
+        } catch (statusErr) {
+          console.error("webhook status update error:", statusErr);
+          results.push({ processed: false, reason: "status_update_error" });
+        }
+      } else if (event.type === "message") {
+        results.push(await processInboundMessage(event.data));
+      }
     }
 
     return res.status(200).json({
       success: true,
-      type: "message",
+      eventCount: events.length,
+      processedCount: results.filter((result) => result?.processed).length,
     });
   } catch (error) {
     saveWebhookFailure(req.body, error);
@@ -611,6 +578,7 @@ async function receiveWebhook(req, res) {
 }
 
 module.exports = {
+  getWebhookEvents,
   verifyWebhook,
   receiveWebhook,
 };
